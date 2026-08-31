@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Props, WidgetSpec } from './lib/types'
 import { getWidget } from './widgets'
+import { Landing } from './components/Landing'
 import { Gallery } from './components/Gallery'
 import { Studio } from './components/Studio'
-import { buildHash, parseRoute } from './lib/share'
+import { GALLERY_HASH, buildHash, parseRoute } from './lib/share'
 
 export default function App() {
   const [route, setRoute] = useState(() => parseRoute(location.hash))
@@ -20,11 +21,16 @@ export default function App() {
     location.hash = buildHash(next, {}, false)
   }, [])
 
-  const close = useCallback(() => {
-    history.pushState(null, '', location.pathname + location.search)
-    setRoute({ widget: null, props: null })
+  const toGallery = useCallback(() => {
+    location.hash = GALLERY_HASH
   }, [])
 
+  const toLanding = useCallback(() => {
+    history.pushState(null, '', location.pathname + location.search)
+    setRoute(parseRoute(''))
+  }, [])
+
+  /* Keep the tuned build in the address bar so the studio stays shareable. */
   const sync = useCallback(
     (props: Props) => {
       if (!spec) return
@@ -34,15 +40,19 @@ export default function App() {
     [spec],
   )
 
+  if (route.view === 'landing') return <Landing onEnter={toGallery} />
+
   return (
     <div className="shell">
       {spec ? (
-        <Studio spec={spec} initial={route.props} onClose={close} onPropsChange={sync} />
+        <Studio spec={spec} initial={route.props} onClose={toGallery} onPropsChange={sync} />
       ) : (
         <>
-          <Gallery onOpen={open} />
+          <Gallery onOpen={open} onHome={toLanding} />
           <footer className="foot">
-            <span>Widgetry</span>
+            <button type="button" className="foot__home" onClick={toLanding}>
+              Widgetry
+            </button>
             <span>MIT licensed. Built to be given away.</span>
           </footer>
         </>

@@ -6,7 +6,7 @@ import { Live } from './Live'
 
 const FILTERS: (Category | 'all')[] = ['all', 'time', 'system', 'media', 'data', 'life']
 
-export function Gallery({ onOpen }: { onOpen: (spec: WidgetSpec) => void }) {
+export function Gallery({ onOpen, onHome }: { onOpen: (spec: WidgetSpec) => void; onHome: () => void }) {
   const [filter, setFilter] = useState<Category | 'all'>('all')
   const [query, setQuery] = useState('')
 
@@ -24,7 +24,9 @@ export function Gallery({ onOpen }: { onOpen: (spec: WidgetSpec) => void }) {
   return (
     <>
       <section className="hero">
-        <p className="hero__eyebrow">Widgetry</p>
+        <button type="button" className="hero__eyebrow" onClick={onHome}>
+          Widgetry
+        </button>
         <h1>
           Live UI utilities
           <br />

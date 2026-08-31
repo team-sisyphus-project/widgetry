@@ -11,14 +11,20 @@ function fromB64(s: string): string {
   return decodeURIComponent(escape(atob(pad + '==='.slice((pad.length + 3) % 4))))
 }
 
+export type View = 'landing' | 'gallery' | 'studio'
+
 export interface Route {
+  view: View
   widget: string | null
   props: Partial<Props> | null
 }
 
+export const GALLERY_HASH = '#/gallery'
+
 export function parseRoute(hash: string): Route {
+  if (/^#\/gallery\b/.test(hash)) return { view: 'gallery', widget: null, props: null }
   const m = /^#\/w\/([a-z0-9-]+)(?:\?p=([^&]+))?/.exec(hash)
-  if (!m) return { widget: null, props: null }
+  if (!m) return { view: 'landing', widget: null, props: null }
   let props: Partial<Props> | null = null
   if (m[2]) {
     try {
@@ -27,7 +33,7 @@ export function parseRoute(hash: string): Route {
       props = null
     }
   }
-  return { widget: m[1], props }
+  return { view: 'studio', widget: m[1], props }
 }
 
 export function buildHash(spec: WidgetSpec, props: Props, includeProps: boolean): string {

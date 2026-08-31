@@ -25,6 +25,18 @@ The studio preview runs those strings. Every export target is generated from
 those same strings. There is no second implementation to drift, so the file you
 download cannot look or behave differently from the tile you clicked.
 
+## Screens
+
+| Route | Screen |
+| --- | --- |
+| `/` | Landing. A 3D tilting card whose face is a live collage of the real widgets, and a button into the gallery |
+| `#/gallery` | The gallery of all 15 running utilities |
+| `#/w/<id>` | The studio for one widget, with `?p=` carrying a tuned build |
+
+The landing card is not a picture of the product. It mounts the same widget specs
+the gallery does, so the first thing a visitor sees is already the thing being
+offered.
+
 ## Export targets
 
 | Target | Files | Notes |
