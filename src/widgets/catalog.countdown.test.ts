@@ -51,6 +51,56 @@ describe('countdown catalog wiring (M-1)', () => {
   })
 })
 
+describe('countdown controls contract (grain-2)', () => {
+  it('targets the datetime primitive for targetDate', () => {
+    const spec = getWidget('countdown')!
+    const control = spec.controls.find((c) => c.key === 'targetDate')
+    expect(control).toBeDefined()
+    expect(control?.type).toBe('datetime')
+  })
+
+  it('exposes label as optional text and displayMode as a breakdown|dday select', () => {
+    const spec = getWidget('countdown')!
+    const label = spec.controls.find((c) => c.key === 'label')
+    expect(label?.type).toBe('text')
+
+    const displayMode = spec.controls.find((c) => c.key === 'displayMode')
+    expect(displayMode?.type).toBe('select')
+    if (displayMode?.type === 'select') {
+      expect(displayMode.default).toBe('breakdown')
+      expect(displayMode.options.map((o) => o.value)).toEqual(['breakdown', 'dday'])
+    }
+  })
+
+  it('omits the label area when label is empty and renders it when set', () => {
+    const spec = getWidget('countdown')!
+    const base = defaultProps(spec)
+
+    const empty = spec.markup({ ...base, label: '' })
+    expect(empty).not.toContain('wg-countdown__label')
+
+    const whitespace = spec.markup({ ...base, label: '   ' })
+    expect(whitespace).not.toContain('wg-countdown__label')
+
+    const filled = spec.markup({ ...base, label: 'Sale ends in' })
+    expect(filled).toContain('wg-countdown__label')
+    expect(filled).toContain('Sale ends in')
+  })
+
+  it('toggles layout between breakdown and dday via displayMode', () => {
+    const spec = getWidget('countdown')!
+    const base = defaultProps(spec)
+
+    const breakdown = spec.markup({ ...base, displayMode: 'breakdown' })
+    expect(breakdown).toContain('wg-countdown__grid')
+    expect(breakdown).not.toContain('wg-countdown__dday')
+
+    const dday = spec.markup({ ...base, displayMode: 'dday' })
+    expect(dday).toContain('wg-countdown__dday')
+    expect(dday).not.toContain('wg-countdown__grid')
+  })
+})
+
 describe('countdown export targets (M-5)', () => {
   const REQUIRED_TARGETS = ['html', 'react', 'vue', 'svelte', 'webcomponent']
 

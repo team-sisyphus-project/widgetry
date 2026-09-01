@@ -240,11 +240,11 @@ export const countdown: WidgetSpec = {
   id: 'countdown',
   name: 'Event Countdown',
   category: 'time',
-  blurb: '목표 일시까지 남은 시간을 보여주는 카운트다운',
+  blurb: 'A live countdown to a target date, as a unit breakdown or a D-day tag.',
   tags: ['time', 'countdown', 'event'],
   frame: { w: 260, h: 260 },
   controls: [
-    { key: 'targetDate', label: 'Target date', type: 'text', default: '2026-12-31T23:59', maxLength: 25 },
+    { key: 'targetDate', label: 'Target date', type: 'datetime', default: '2026-12-31T23:59' },
     { key: 'label', label: 'Label', type: 'text', default: 'Sale ends in', maxLength: 40 },
     {
       key: 'displayMode',
