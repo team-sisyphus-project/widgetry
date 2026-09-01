@@ -155,10 +155,9 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
       </div>
 
       <p className="landing__caption">
-        <span className="landing__hint landing__hint--fine">Move your cursor to tilt the card, </span>
-        <span className="landing__hint landing__hint--coarse">Fifteen utilities are waiting, </span>
+        <span className="landing__hint landing__hint--coarse">Fifteen utilities are waiting, or </span>
         <button type="button" onClick={onEnter}>
-          or jump straight in
+          jump straight in
         </button>
       </p>
     </div>
