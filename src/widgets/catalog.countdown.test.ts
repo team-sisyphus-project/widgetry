@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { WIDGETS, getWidget } from './index'
+import { breakdown, remainingMs } from './time'
 import { defaultProps } from '../lib/types'
 import { buildTargets } from '../lib/export'
 
@@ -98,6 +99,105 @@ describe('countdown controls contract (grain-2)', () => {
     const dday = spec.markup({ ...base, displayMode: 'dday' })
     expect(dday).toContain('wg-countdown__dday')
     expect(dday).not.toContain('wg-countdown__grid')
+  })
+})
+
+describe('countdown remaining-time decomposition (M-2)', () => {
+  const SECOND = 1000
+  const MINUTE = 60 * SECOND
+  const HOUR = 60 * MINUTE
+  const DAY = 24 * HOUR
+
+  it('splits a duration into day/hour/minute/second units', () => {
+    // 3 days 12 hours 05 minutes 20 seconds — the spec breakdown example.
+    const ms = 3 * DAY + 12 * HOUR + 5 * MINUTE + 20 * SECOND
+    const b = breakdown(ms)
+    expect(b).toMatchObject({ days: 3, hours: 12, mins: 5, secs: 20, expired: false })
+    expect(b.ms).toBe(ms)
+  })
+
+  it('carries only the sub-unit remainder into each smaller unit', () => {
+    // 1 day exactly: everything below days is zero, nothing bleeds over.
+    expect(breakdown(DAY)).toMatchObject({ days: 1, hours: 0, mins: 0, secs: 0 })
+    // 23:59:59 stays under one day and fills every lower unit.
+    expect(breakdown(DAY - SECOND)).toMatchObject({ days: 0, hours: 23, mins: 59, secs: 59 })
+  })
+
+  it('floors sub-second milliseconds down to the current second', () => {
+    expect(breakdown(59 * SECOND + 900)).toMatchObject({ mins: 0, secs: 59 })
+  })
+
+  it('emits a ceil-based D-day tag while counting down', () => {
+    // 3.5 days remaining rounds up to D-4 (a partial day still counts as a day away).
+    expect(breakdown(3 * DAY + 12 * HOUR).dday).toBe('D-4')
+    expect(breakdown(DAY).dday).toBe('D-1')
+    // Under a day but not yet expired is still D-1, never D-0.
+    expect(breakdown(SECOND).dday).toBe('D-1')
+  })
+})
+
+describe('countdown expiry clamp (M-3)', () => {
+  it('clamps a passed target to a non-negative, all-zero expired state', () => {
+    const b = breakdown(-5000)
+    expect(b.ms).toBe(0)
+    expect(b.expired).toBe(true)
+    expect(b).toMatchObject({ days: 0, hours: 0, mins: 0, secs: 0 })
+  })
+
+  it('treats exactly hitting the target (zero remaining) as expired', () => {
+    const b = breakdown(0)
+    expect(b.expired).toBe(true)
+    expect(b.dday).toBe('D-DAY')
+  })
+
+  it('never counts below zero and never emits a negative D-day', () => {
+    const b = breakdown(-1 * 24 * 60 * 60 * 1000)
+    expect(b.secs).toBeGreaterThanOrEqual(0)
+    expect(b.dday).toBe('D-DAY')
+  })
+
+  it('remainingMs floors a past ISO datetime at zero rather than going negative', () => {
+    expect(remainingMs('2000-01-01T00:00')).toBe(0)
+    expect(remainingMs('not-a-date')).toBe(0)
+    expect(remainingMs('2999-12-31T23:59')).toBeGreaterThan(0)
+  })
+})
+
+describe('countdown markup branches on displayMode (M-4)', () => {
+  const spec = getWidget('countdown')!
+  const base = defaultProps(spec)
+  const PAST = '2000-01-01T00:00'
+  const FUTURE = '2999-12-31T23:59'
+
+  it('renders a four-unit breakdown grid with an Ended affordance in breakdown mode', () => {
+    const html = spec.markup({ ...base, displayMode: 'breakdown', targetDate: FUTURE })
+    expect(html).toContain('wg-countdown__grid')
+    for (const unit of ['days', 'hours', 'minutes', 'seconds']) {
+      expect(html).toContain(`data-unit="${unit}"`)
+    }
+    expect(html).toContain('Ended')
+    expect(html).not.toContain('data-dday')
+    expect(html).not.toContain('is-expired')
+  })
+
+  it('marks the breakdown grid expired with zeroed units once the target has passed', () => {
+    const html = spec.markup({ ...base, displayMode: 'breakdown', targetDate: PAST })
+    expect(html).toContain('wg-countdown__grid is-expired')
+    expect(html).toContain('data-unit="days">0<')
+    expect(html).toContain('data-unit="seconds">00<')
+  })
+
+  it('renders a single D-day tag (and no grid) in dday mode', () => {
+    const html = spec.markup({ ...base, displayMode: 'dday', targetDate: FUTURE })
+    expect(html).toContain('data-dday')
+    expect(html).toMatch(/D-\d+/)
+    expect(html).not.toContain('wg-countdown__grid')
+  })
+
+  it('shows the expired D-DAY tag once the target has passed', () => {
+    const html = spec.markup({ ...base, displayMode: 'dday', targetDate: PAST })
+    expect(html).toContain('wg-countdown__dday is-expired')
+    expect(html).toContain('D-DAY')
   })
 })
 
