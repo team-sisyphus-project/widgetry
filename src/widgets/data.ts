@@ -294,3 +294,455 @@ export const wallet: WidgetSpec = {
     return function () { stack.removeEventListener('click', flip); };
   `),
 }
+
+/* ============================== QR encoder ===============================
+ * Byte-mode QR Code generator, error-correction level M, versions 1-40.
+ * Pure and deterministic: given a string it returns the module matrix, so the
+ * same code paints the live preview and every exported (static) file with no
+ * runtime dependency and no network call — the export stays offline-scannable.
+ * Algorithm adapted from Project Nayuki's public-domain QR reference.
+ */
+
+// Error-correction codewords per block, level M, indexed by version (1-40).
+const QR_ECC_PER_BLOCK_M = [
+  -1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28,
+  28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+]
+// Number of error-correction blocks, level M, indexed by version (1-40).
+const QR_NUM_BLOCKS_M = [
+  -1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25,
+  26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49,
+]
+
+/** Multiply two field elements of GF(256) with the QR reduction polynomial. */
+function qrMul(x: number, y: number): number {
+  let z = 0
+  for (let i = 7; i >= 0; i--) {
+    z = (z << 1) ^ ((z >>> 7) * 0x11d)
+    z ^= ((y >>> i) & 1) * x
+  }
+  return z & 0xff
+}
+
+/** Reed-Solomon generator polynomial coefficients for the given degree. */
+function qrRsDivisor(degree: number): number[] {
+  const result = new Array<number>(degree).fill(0)
+  result[degree - 1] = 1
+  let root = 1
+  for (let i = 0; i < degree; i++) {
+    for (let j = 0; j < result.length; j++) {
+      result[j] = qrMul(result[j], root)
+      if (j + 1 < result.length) result[j] ^= result[j + 1]
+    }
+    root = qrMul(root, 0x02)
+  }
+  return result
+}
+
+/** Reed-Solomon remainder (the error-correction codewords) for one block. */
+function qrRsRemainder(data: number[], divisor: number[]): number[] {
+  const result = divisor.map(() => 0)
+  for (const b of data) {
+    const factor = b ^ (result.shift() as number)
+    result.push(0)
+    for (let i = 0; i < divisor.length; i++) result[i] ^= qrMul(divisor[i], factor)
+  }
+  return result
+}
+
+/** Total module bits available in a symbol of the given version, before EC. */
+function qrRawDataModules(ver: number): number {
+  let result = (16 * ver + 128) * ver + 64
+  if (ver >= 2) {
+    const numAlign = Math.floor(ver / 7) + 2
+    result -= (25 * numAlign - 10) * numAlign - 55
+    if (ver >= 7) result -= 36
+  }
+  return result
+}
+
+/** Data codewords (level M) that fit in the given version. */
+function qrDataCodewords(ver: number): number {
+  return Math.floor(qrRawDataModules(ver) / 8) - QR_ECC_PER_BLOCK_M[ver] * QR_NUM_BLOCKS_M[ver]
+}
+
+/** Centre coordinates of the alignment patterns for the given version. */
+function qrAlignPositions(ver: number): number[] {
+  if (ver === 1) return []
+  const numAlign = Math.floor(ver / 7) + 2
+  const size = ver * 4 + 17
+  const step = ver === 32 ? 26 : Math.ceil((size - 13) / (numAlign * 2 - 2)) * 2
+  const result: number[] = []
+  for (let pos = size - 7, i = 0; i < numAlign - 1; i++, pos -= step) result.splice(0, 0, pos)
+  result.splice(0, 0, 6)
+  return result
+}
+
+/**
+ * Encode `text` (UTF-8, byte mode) as a QR module matrix. `matrix[y][x] === true`
+ * marks a dark module. Throws if the text exceeds version-40 capacity.
+ */
+export function qrMatrix(text: string): boolean[][] {
+  const bytes = Array.from(new TextEncoder().encode(text))
+
+  let version = 1
+  for (; version <= 40; version++) {
+    const capacityBits = qrDataCodewords(version) * 8
+    const ccBits = version <= 9 ? 8 : 16
+    if (4 + ccBits + bytes.length * 8 <= capacityBits) break
+  }
+  if (version > 40) throw new Error('qr: data too long to encode')
+
+  // ---- bit stream: mode + length + payload + terminator + padding ----
+  const bb: number[] = []
+  const appendBits = (val: number, len: number) => {
+    for (let i = len - 1; i >= 0; i--) bb.push((val >>> i) & 1)
+  }
+  appendBits(0b0100, 4) // byte mode
+  appendBits(bytes.length, version <= 9 ? 8 : 16)
+  for (const b of bytes) appendBits(b, 8)
+  const dataCapacityBits = qrDataCodewords(version) * 8
+  appendBits(0, Math.min(4, dataCapacityBits - bb.length))
+  appendBits(0, (8 - (bb.length % 8)) % 8)
+  for (let pad = 0xec; bb.length < dataCapacityBits; pad ^= 0xec ^ 0x11) appendBits(pad, 8)
+
+  const dataCodewords = new Array<number>(bb.length >>> 3).fill(0)
+  for (let i = 0; i < bb.length; i++) dataCodewords[i >>> 3] |= bb[i] << (7 - (i & 7))
+
+  // ---- split into blocks, add EC codewords, interleave ----
+  const numBlocks = QR_NUM_BLOCKS_M[version]
+  const blockEccLen = QR_ECC_PER_BLOCK_M[version]
+  const rawCodewords = Math.floor(qrRawDataModules(version) / 8)
+  const numShortBlocks = numBlocks - (rawCodewords % numBlocks)
+  const shortBlockLen = Math.floor(rawCodewords / numBlocks)
+  const shortBlockDataLen = shortBlockLen - blockEccLen
+  const rsDiv = qrRsDivisor(blockEccLen)
+  const blocks: number[][] = []
+  for (let i = 0, k = 0; i < numBlocks; i++) {
+    const datLen = shortBlockDataLen + (i < numShortBlocks ? 0 : 1)
+    const dat = dataCodewords.slice(k, k + datLen)
+    k += datLen
+    const ecc = qrRsRemainder(dat, rsDiv)
+    if (i < numShortBlocks) dat.push(0) // pad short blocks so interleave is rectangular
+    blocks.push(dat.concat(ecc))
+  }
+  const finalCodewords: number[] = []
+  for (let i = 0; i < blocks[0].length; i++) {
+    for (let j = 0; j < blocks.length; j++) {
+      if (i !== shortBlockDataLen || j >= numShortBlocks) finalCodewords.push(blocks[j][i])
+    }
+  }
+
+  // ---- lay out the module grid ----
+  const size = version * 4 + 17
+  const modules: boolean[][] = Array.from({ length: size }, () => new Array<boolean>(size).fill(false))
+  const isFn: boolean[][] = Array.from({ length: size }, () => new Array<boolean>(size).fill(false))
+  const setFn = (x: number, y: number, dark: boolean) => {
+    modules[y][x] = dark
+    isFn[y][x] = true
+  }
+  const getBit = (x: number, i: number) => ((x >>> i) & 1) !== 0
+
+  // timing patterns
+  for (let i = 0; i < size; i++) {
+    setFn(6, i, i % 2 === 0)
+    setFn(i, 6, i % 2 === 0)
+  }
+  // finder patterns + separators
+  const drawFinder = (cx: number, cy: number) => {
+    for (let dy = -4; dy <= 4; dy++)
+      for (let dx = -4; dx <= 4; dx++) {
+        const dist = Math.max(Math.abs(dx), Math.abs(dy))
+        const xx = cx + dx
+        const yy = cy + dy
+        if (xx >= 0 && xx < size && yy >= 0 && yy < size) setFn(xx, yy, dist !== 2 && dist !== 4)
+      }
+  }
+  drawFinder(3, 3)
+  drawFinder(size - 4, 3)
+  drawFinder(3, size - 4)
+  // alignment patterns
+  const alignPos = qrAlignPositions(version)
+  const na = alignPos.length
+  const drawAlign = (cx: number, cy: number) => {
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++)
+        setFn(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1)
+  }
+  for (let i = 0; i < na; i++)
+    for (let j = 0; j < na; j++) {
+      if (!((i === 0 && j === 0) || (i === 0 && j === na - 1) || (i === na - 1 && j === 0)))
+        drawAlign(alignPos[i], alignPos[j])
+    }
+
+  // format information (level M) for a given mask, plus the fixed dark module
+  const drawFormat = (mask: number) => {
+    const data = (0 << 3) | mask // level M -> format bits 00
+    let rem = data
+    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537)
+    const bits = ((data << 10) | rem) ^ 0x5412
+    for (let i = 0; i <= 5; i++) setFn(8, i, getBit(bits, i))
+    setFn(8, 7, getBit(bits, 6))
+    setFn(8, 8, getBit(bits, 7))
+    setFn(7, 8, getBit(bits, 8))
+    for (let i = 9; i < 15; i++) setFn(14 - i, 8, getBit(bits, i))
+    for (let i = 0; i < 8; i++) setFn(size - 1 - i, 8, getBit(bits, i))
+    for (let i = 8; i < 15; i++) setFn(8, size - 15 + i, getBit(bits, i))
+    setFn(8, size - 8, true)
+  }
+  // version information (versions 7+)
+  if (version >= 7) {
+    let rem = version
+    for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25)
+    const bits = (version << 12) | rem
+    for (let i = 0; i < 18; i++) {
+      const bit = getBit(bits, i)
+      const a = size - 11 + (i % 3)
+      const b = Math.floor(i / 3)
+      setFn(a, b, bit)
+      setFn(b, a, bit)
+    }
+  }
+  drawFormat(0) // reserve the format cells before data placement
+
+  // ---- weave the codeword bits through the grid ----
+  let iBit = 0
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5
+    for (let vert = 0; vert < size; vert++) {
+      for (let k = 0; k < 2; k++) {
+        const x = right - k
+        const upward = ((right + 1) & 2) === 0
+        const y = upward ? size - 1 - vert : vert
+        if (!isFn[y][x] && iBit < finalCodewords.length * 8) {
+          modules[y][x] = getBit(finalCodewords[iBit >>> 3], 7 - (iBit & 7))
+          iBit++
+        }
+      }
+    }
+  }
+
+  // ---- mask selection by penalty score ----
+  const applyMask = (mask: number) => {
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        if (isFn[y][x]) continue
+        let invert = false
+        switch (mask) {
+          case 0: invert = (x + y) % 2 === 0; break
+          case 1: invert = y % 2 === 0; break
+          case 2: invert = x % 3 === 0; break
+          case 3: invert = (x + y) % 3 === 0; break
+          case 4: invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0; break
+          case 5: invert = ((x * y) % 2) + ((x * y) % 3) === 0; break
+          case 6: invert = (((x * y) % 2) + ((x * y) % 3)) % 2 === 0; break
+          case 7: invert = (((x + y) % 2) + ((x * y) % 3)) % 2 === 0; break
+        }
+        if (invert) modules[y][x] = !modules[y][x]
+      }
+  }
+  const addHistory = (runLen: number, hist: number[]) => {
+    if (hist[0] === 0) runLen += size // count the leading white border once
+    hist.copyWithin(1, 0)
+    hist[0] = runLen
+  }
+  const countPatterns = (hist: number[]) => {
+    const n = hist[1]
+    const core = n > 0 && hist[2] === n && hist[3] === n * 3 && hist[4] === n && hist[5] === n
+    return (
+      (core && hist[0] >= n * 4 && hist[6] >= n ? 1 : 0) +
+      (core && hist[6] >= n * 4 && hist[0] >= n ? 1 : 0)
+    )
+  }
+  const terminate = (runColor: boolean, runLen: number, hist: number[]) => {
+    if (runColor) {
+      addHistory(runLen, hist)
+      runLen = 0
+    }
+    runLen += size
+    addHistory(runLen, hist)
+    return countPatterns(hist)
+  }
+  const penalty = () => {
+    const N1 = 3, N2 = 3, N3 = 40, N4 = 10
+    let result = 0
+    for (let y = 0; y < size; y++) {
+      let runColor = false, runLen = 0
+      const hist = [0, 0, 0, 0, 0, 0, 0]
+      for (let x = 0; x < size; x++) {
+        if (modules[y][x] === runColor) {
+          runLen++
+          if (runLen === 5) result += N1
+          else if (runLen > 5) result++
+        } else {
+          addHistory(runLen, hist)
+          if (!runColor) result += countPatterns(hist) * N3
+          runColor = modules[y][x]
+          runLen = 1
+        }
+      }
+      result += terminate(runColor, runLen, hist) * N3
+    }
+    for (let x = 0; x < size; x++) {
+      let runColor = false, runLen = 0
+      const hist = [0, 0, 0, 0, 0, 0, 0]
+      for (let y = 0; y < size; y++) {
+        if (modules[y][x] === runColor) {
+          runLen++
+          if (runLen === 5) result += N1
+          else if (runLen > 5) result++
+        } else {
+          addHistory(runLen, hist)
+          if (!runColor) result += countPatterns(hist) * N3
+          runColor = modules[y][x]
+          runLen = 1
+        }
+      }
+      result += terminate(runColor, runLen, hist) * N3
+    }
+    for (let y = 0; y < size - 1; y++)
+      for (let x = 0; x < size - 1; x++) {
+        const c = modules[y][x]
+        if (c === modules[y][x + 1] && c === modules[y + 1][x] && c === modules[y + 1][x + 1])
+          result += N2
+      }
+    let dark = 0
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (modules[y][x]) dark++
+    const total = size * size
+    result += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * N4
+    return result
+  }
+
+  let bestMask = 0
+  let minPenalty = Infinity
+  for (let m = 0; m < 8; m++) {
+    applyMask(m)
+    drawFormat(m)
+    const p = penalty()
+    if (p < minPenalty) {
+      minPenalty = p
+      bestMask = m
+    }
+    applyMask(m) // undo
+  }
+  applyMask(bestMask)
+  drawFormat(bestMask)
+  return modules
+}
+
+/** SVG `<svg>` element for a QR of `text`, with a four-module quiet zone. */
+export function qrSvg(text: string): string {
+  let matrix: boolean[][]
+  try {
+    matrix = qrMatrix(text)
+  } catch {
+    // Beyond QR capacity: render a blank paper tile rather than break the studio.
+    return dedent(`
+      <svg class="wg-contact-card__qr-svg" viewBox="0 0 29 29" shape-rendering="crispEdges" role="img" aria-label="QR code unavailable">
+        <rect class="wg-contact-card__qr-paper" width="29" height="29"></rect>
+      </svg>
+    `)
+  }
+  const n = matrix.length
+  const quiet = 4
+  const dim = n + quiet * 2
+  let path = ''
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++)
+      if (matrix[y][x]) path += `M${x + quiet} ${y + quiet}h1v1h-1z`
+  return dedent(`
+    <svg class="wg-contact-card__qr-svg" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges" role="img" aria-label="QR code">
+      <rect class="wg-contact-card__qr-paper" width="${dim}" height="${dim}"></rect>
+      <path class="wg-contact-card__qr-ink" d="${path}"></path>
+    </svg>
+  `)
+}
+
+export const contactCard: WidgetSpec = {
+  id: 'contact-card',
+  name: 'Contact Card',
+  category: 'data',
+  blurb: 'A business card showing a name, contact line and a scannable QR code.',
+  tags: ['data', 'contact', 'qr', 'card'],
+  frame: { w: 220, h: 252 },
+  controls: [
+    { key: 'name', label: 'Name', type: 'text', default: 'Avery Quinn' },
+    { key: 'title', label: 'Title', type: 'text', default: 'Product Designer' },
+    { key: 'contactInfo', label: 'Contact', type: 'text', default: 'avery@studio.co' },
+    { key: 'qrTarget', label: 'QR target', type: 'text', default: 'https://widgetry.dev' },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Accent', type: 'color', default: '#2f8bff', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+  }),
+  markup: (p) => {
+    const title = String(p.title).trim()
+    return dedent(`
+      <div class="wg-contact-card__card">
+        <div class="wg-contact-card__head">
+          <span class="wg-contact-card__chip"></span>
+          <div class="wg-contact-card__id">
+            <strong class="wg-contact-card__name">${esc(String(p.name))}</strong>
+            ${title ? `<span class="wg-contact-card__title">${esc(title)}</span>` : ''}
+          </div>
+        </div>
+        <div class="wg-contact-card__foot">
+          <span class="wg-contact-card__contact">${esc(String(p.contactInfo))}</span>
+          <span class="wg-contact-card__qr">${qrSvg(String(p.qrTarget))}</span>
+        </div>
+      </div>
+    `)
+  },
+  css: () => dedent(`
+    .wg-contact-card {
+      width: 190px;
+      height: 232px;
+      font: 500 12px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      box-sizing: border-box;
+    }
+    .wg-contact-card__card {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      width: 100%;
+      height: 100%;
+      padding: 18px;
+      border-radius: 24px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      box-shadow: 0 18px 40px -20px rgba(0, 0, 0, .55);
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .wg-contact-card__head { display: flex; align-items: flex-start; gap: 12px; }
+    .wg-contact-card__chip {
+      width: 26px;
+      height: 18px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, .45);
+      flex: 0 0 auto;
+      margin-top: 2px;
+    }
+    .wg-contact-card__id { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .wg-contact-card__name { font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+    .wg-contact-card__title { font-size: 11px; letter-spacing: .02em; color: var(--wg-accent); }
+    .wg-contact-card__foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+    .wg-contact-card__contact { font-size: 11px; opacity: .6; word-break: break-all; min-width: 0; }
+    .wg-contact-card__qr {
+      width: 66px;
+      height: 66px;
+      flex: 0 0 auto;
+      border-radius: 10px;
+      background: #ffffff;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+    .wg-contact-card__qr-svg { display: block; width: 100%; height: 100%; }
+    .wg-contact-card__qr-paper { fill: #ffffff; }
+    .wg-contact-card__qr-ink { fill: #0a0a0a; }
+  `),
+}
