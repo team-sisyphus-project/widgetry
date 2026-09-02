@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WIDGETS, getWidget } from './index'
 import { breakdown, remainingMs } from './time'
 import { defaultProps } from '../lib/types'
@@ -227,5 +227,110 @@ describe('countdown export targets (M-5)', () => {
         expect(file.content.length).toBeGreaterThan(0)
       }
     }
+  })
+
+  /*
+   * M-5 core: prove the five formats do not merely build — they carry the *same*
+   * rendered countdown value, and that value equals the canonical `spec.markup(props)`.
+   *
+   * Every framework target embeds the same widget markup verbatim except React,
+   * which passes it through `htmlToJsx` (keeping `data-*` attributes and text
+   * intact but reflowing whitespace). So the value lives at the same anchors in
+   * all five: the `data-unit` day/hr/min/sec numbers in breakdown mode, and the
+   * `data-dday` `D-n` text in dday mode. We read those anchors byte-for-byte from
+   * the shipped export output — the `\s*` in each pattern absorbs React's reflow.
+   */
+  const FRAMEWORK_TARGETS = ['html', 'react', 'vue', 'svelte', 'webcomponent'] as const
+
+  /** Concatenated contents of every file a target ships (React ships .tsx + .css). */
+  function contentOf(targets: ReturnType<typeof buildTargets>, id: string): string {
+    const target = targets.find((t) => t.id === id)
+    if (!target) throw new Error(`missing export target: ${id}`)
+    return target.files.map((f) => f.content).join('\n')
+  }
+
+  /** The four breakdown numbers as `days:hours:minutes:seconds`, from any format. */
+  function extractBreakdown(content: string): string {
+    return ['days', 'hours', 'minutes', 'seconds']
+      .map((unit) => {
+        const m = content.match(new RegExp(`data-unit="${unit}">\\s*([0-9]+)`))
+        if (!m) throw new Error(`no breakdown value for "${unit}"`)
+        return m[1]
+      })
+      .join(':')
+  }
+
+  /** The `D-n` / `D-DAY` tag text, from any format. */
+  function extractDday(content: string): string {
+    const m = content.match(/data-dday>\s*(D-[A-Z0-9]+)/)
+    if (!m) throw new Error('no D-day value')
+    return m[1]
+  }
+
+  describe('carry one identical rendered value across all five formats', () => {
+    const spec = getWidget('countdown')!
+    const base = defaultProps(spec)
+    // Frozen clock so `remainingMs`/`markup`/`script` are deterministic. The
+    // targets below sit at whole day/hour/minute/second offsets from NOW.
+    const NOW = new Date('2026-06-01T00:00:00')
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.setSystemTime(NOW)
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('agrees on the breakdown value (days/hrs/min/sec)', () => {
+      // NOW + 3d 12h 05m 20s.
+      const props = { ...base, displayMode: 'breakdown', targetDate: '2026-06-04T12:05:20' }
+      const targets = buildTargets(spec, props)
+
+      const canonical = extractBreakdown(spec.markup(props))
+      expect(canonical).toBe('3:12:05:20') // days raw, lower units zero-padded
+
+      for (const id of FRAMEWORK_TARGETS) {
+        expect(extractBreakdown(contentOf(targets, id))).toBe(canonical)
+      }
+    })
+
+    it('agrees on the D-day tag value', () => {
+      // Same 3d 12h remaining rounds up to D-4 (a partial day still counts).
+      const props = { ...base, displayMode: 'dday', targetDate: '2026-06-04T12:05:20' }
+      const targets = buildTargets(spec, props)
+
+      const canonical = extractDday(spec.markup(props))
+      expect(canonical).toBe('D-4')
+
+      for (const id of FRAMEWORK_TARGETS) {
+        expect(extractDday(contentOf(targets, id))).toBe(canonical)
+      }
+    })
+
+    it('agrees on the expired value in breakdown mode (zeroed units)', () => {
+      const props = { ...base, displayMode: 'breakdown', targetDate: '2020-01-01T00:00' }
+      const targets = buildTargets(spec, props)
+
+      const canonical = extractBreakdown(spec.markup(props))
+      expect(canonical).toBe('0:00:00:00')
+      expect(breakdown(remainingMs(String(props.targetDate))).expired).toBe(true)
+
+      for (const id of FRAMEWORK_TARGETS) {
+        expect(extractBreakdown(contentOf(targets, id))).toBe(canonical)
+      }
+    })
+
+    it('agrees on the expired value in dday mode (D-DAY)', () => {
+      const props = { ...base, displayMode: 'dday', targetDate: '2020-01-01T00:00' }
+      const targets = buildTargets(spec, props)
+
+      const canonical = extractDday(spec.markup(props))
+      expect(canonical).toBe('D-DAY')
+
+      for (const id of FRAMEWORK_TARGETS) {
+        expect(extractDday(contentOf(targets, id))).toBe(canonical)
+      }
+    })
   })
 })
