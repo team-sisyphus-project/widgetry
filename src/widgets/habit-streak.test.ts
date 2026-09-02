@@ -1,8 +1,9 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { WIDGETS, getWidget } from './index'
 import { habitStreak } from './life'
 import { buildHash, parseRoute } from '../lib/share'
-import { rootHtml } from '../lib/render'
+import { mount, rootHtml } from '../lib/render'
 import { normalizeProps } from '../lib/types'
 
 /**
@@ -119,5 +120,122 @@ describe('M-2: progress-bar fill ratio accuracy', () => {
       const scriptFill = `${fill(Number(currentLit![1]), Number(goalLit![1]))}%`
       expect(scriptFill).toBe(varsFill)
     }
+  })
+})
+
+/**
+ * M-3 — flipping `todayChecked` makes the progress bar react immediately.
+ *
+ * This drives the exact live seam the studio uses — `mount(host, spec, props)` from
+ * `render.ts`, which runs the widget's emitted `script` against a real element — rather
+ * than the string render path M-2 checks. We mount with `todayChecked:false`, then fire a
+ * *synchronous* `click` on the `[data-today]` toggle and read `rail.style.width` on the very
+ * next line, with no `await`/microtask flush in between. If the bar only updated on a later
+ * render, the inline width would still read the pre-toggle value and the assertion fails —
+ * so a pass proves the reaction lands before any next render.
+ *
+ * The expected fill is recomputed independently from the raw inputs via the Spec formula
+ * `min(1, (current + 1) / goal) * 100%` (the toggle previews "today's day", +1), never read
+ * back from the widget, so a widget-side change to the toggle math fails here.
+ */
+describe('M-3: todayChecked toggle reacts on the progress bar immediately', () => {
+  /** Live fill the toggled-on bar must show: the +1 preview, clamped, as a width string. */
+  const checkedFill = (current: number, goal: number): string =>
+    `${Math.min(1, (Math.max(0, current) + 1) / Math.max(1, goal)) * 100}%`
+
+  /** Static fill the toggled-off bar shows: current/goal, clamped, as a width string. */
+  const baseFill = (current: number, goal: number): string =>
+    `${Math.min(1, Math.max(0, current) / Math.max(1, goal)) * 100}%`
+
+  type Mounted = {
+    rail: HTMLElement
+    count: HTMLElement
+    toggle: HTMLElement
+    dispose: () => void
+  }
+
+  /** Mount habit-streak live with todayChecked:false and hand back its inner seams. */
+  const mountLive = (current: number, goal: number): Mounted => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const props = normalizeProps(habitStreak, {
+      currentStreak: current,
+      goalStreak: goal,
+      todayChecked: false,
+    })
+    const dispose = mount(host, habitStreak, props)
+    return {
+      rail: host.querySelector<HTMLElement>('[data-rail]')!,
+      count: host.querySelector<HTMLElement>('[data-count]')!,
+      toggle: host.querySelector<HTMLElement>('[data-today]')!,
+      dispose: () => {
+        dispose()
+        host.remove()
+      },
+    }
+  }
+
+  /** One synchronous click — the reaction must already be visible when this returns. */
+  const clickToggle = (toggle: HTMLElement): void => {
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  it('updates rail width and count synchronously on toggle, before any next render', () => {
+    const current = 12
+    const goal = 30
+    const { rail, count, toggle, dispose } = mountLive(current, goal)
+
+    // Baseline: mounted with todayChecked:false, so the bar shows the static current ratio.
+    expect(rail.style.width).toBe(baseFill(current, goal))
+    expect(count.textContent).toBe(String(current))
+
+    // Fire the toggle and read the inline width on the very next line — no await, no flush.
+    clickToggle(toggle)
+
+    // Reaction already visible: the +1 preview width and count are in place.
+    expect(rail.style.width).toBe(checkedFill(current, goal))
+    expect(rail.style.width).toBe('43.333333333333336%')
+    expect(count.textContent).toBe(String(current + 1))
+    // The reaction is a temporary preview: current+1 is shown, not (current+2).
+    expect(rail.style.width).not.toBe(checkedFill(current + 1, goal))
+
+    dispose()
+  })
+
+  it('clamps the toggled bar at 100% when the +1 day reaches or exceeds the goal', () => {
+    // current+1 === goal: exactly reaches.
+    {
+      const { rail, count, toggle, dispose } = mountLive(29, 30)
+      clickToggle(toggle)
+      expect(rail.style.width).toBe('100%')
+      expect(count.textContent).toBe('30')
+      dispose()
+    }
+    // current+1 > goal: overshoot still clamps, never exceeds 100%.
+    {
+      const { rail, count, toggle, dispose } = mountLive(45, 30)
+      clickToggle(toggle)
+      expect(rail.style.width).toBe('100%')
+      expect(Number(rail.style.width.replace('%', ''))).toBeLessThanOrEqual(100)
+      expect(count.textContent).toBe('46')
+      dispose()
+    }
+  })
+
+  it('reverts to the base width and count on a second toggle', () => {
+    const current = 12
+    const goal = 30
+    const { rail, count, toggle, dispose } = mountLive(current, goal)
+
+    clickToggle(toggle)
+    expect(rail.style.width).toBe(checkedFill(current, goal))
+    expect(count.textContent).toBe(String(current + 1))
+
+    // Second synchronous toggle turns it back off — the preview is dropped immediately.
+    clickToggle(toggle)
+    expect(rail.style.width).toBe(baseFill(current, goal))
+    expect(count.textContent).toBe(String(current))
+
+    dispose()
   })
 })
