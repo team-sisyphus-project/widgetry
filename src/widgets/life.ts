@@ -142,6 +142,155 @@ export const checklist: WidgetSpec = {
   `),
 }
 
+export const habitStreak: WidgetSpec = {
+  id: 'habit-streak',
+  name: 'Habit Streak',
+  category: 'life',
+  blurb: '연속 며칠째 이어가고 있는지 보여주는 습관 트래커',
+  tags: ['life', 'habit', 'streak'],
+  frame: { w: 220, h: 200 },
+  interactive: true,
+  controls: [
+    { key: 'title', label: 'Title', type: 'text', default: 'Morning Run' },
+    { key: 'currentStreak', label: 'Current streak', type: 'number', default: 12, min: 0, max: 999, step: 1 },
+    { key: 'goalStreak', label: 'Goal streak', type: 'number', default: 30, min: 1, max: 999, step: 1 },
+    { key: 'todayChecked', label: 'Checked today', type: 'boolean', default: false },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Accent', type: 'color', default: '#e845d4', group: 'Color' },
+  ],
+  vars: (p) => {
+    const goal = Math.max(1, Number(p.goalStreak))
+    const ratio = Math.min(1, Math.max(0, Number(p.currentStreak)) / goal)
+    return {
+      '--wg-bg': String(p.bg),
+      '--wg-ink': String(p.ink),
+      '--wg-accent': String(p.accent),
+      '--wg-fill': `${ratio * 100}%`,
+    }
+  },
+  markup: (p) => {
+    const current = Math.max(0, Number(p.currentStreak))
+    const goal = Math.max(1, Number(p.goalStreak))
+    const checked = Boolean(p.todayChecked)
+    return dedent(`
+      <div class="wg-habit-streak__head">
+        <span class="wg-habit-streak__title">${esc(String(p.title))}</span>
+        <span class="wg-habit-streak__goal">/ ${goal}d</span>
+      </div>
+      <div class="wg-habit-streak__metric">
+        <strong class="wg-habit-streak__count" data-count>${current}</strong>
+        <span class="wg-habit-streak__unit">day streak</span>
+      </div>
+      <div class="wg-habit-streak__rail"><i data-rail></i></div>
+      <button type="button" class="wg-habit-streak__today${checked ? ' is-checked' : ''}"
+              data-today aria-pressed="${checked ? 'true' : 'false'}">
+        <span class="wg-habit-streak__box" aria-hidden="true">
+          <svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </span>
+        <span class="wg-habit-streak__todaytext">Check today</span>
+      </button>
+    `)
+  },
+  css: () => dedent(`
+    .wg-habit-streak {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      width: 200px;
+      padding: 18px;
+      border-radius: 22px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      box-sizing: border-box;
+    }
+    .wg-habit-streak__head { display: flex; align-items: baseline; justify-content: space-between; }
+    .wg-habit-streak__title { font-size: 14px; font-weight: 600; }
+    .wg-habit-streak__goal { font-size: 13px; opacity: .5; }
+    .wg-habit-streak__metric { display: flex; align-items: baseline; gap: 8px; }
+    .wg-habit-streak__count { font-size: 40px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+    .wg-habit-streak__unit { font-size: 12px; opacity: .55; }
+    .wg-habit-streak__rail {
+      height: 6px;
+      border-radius: 99px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      overflow: hidden;
+    }
+    .wg-habit-streak__rail i {
+      display: block;
+      height: 100%;
+      width: var(--wg-fill);
+      border-radius: 99px;
+      background: var(--wg-accent);
+      transition: width .35s cubic-bezier(.3, 1, .4, 1);
+    }
+    .wg-habit-streak__today {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .wg-habit-streak__box {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1.5px solid color-mix(in srgb, var(--wg-ink) 30%, transparent);
+      display: grid;
+      place-items: center;
+      color: transparent;
+      transition: background .2s ease, border-color .2s ease, color .2s ease;
+    }
+    .wg-habit-streak__box svg { width: 11px; height: 11px; display: block; }
+    .wg-habit-streak__today.is-checked .wg-habit-streak__box {
+      background: var(--wg-accent);
+      border-color: var(--wg-accent);
+      color: #fff;
+    }
+    .wg-habit-streak__todaytext { font-size: 13px; opacity: .85; }
+    @media (prefers-reduced-motion: reduce) {
+      .wg-habit-streak__rail i { transition: none; }
+    }
+  `),
+  script: (p) => {
+    const goal = Math.max(1, Number(p.goalStreak))
+    const current = Math.max(0, Number(p.currentStreak))
+    return dedent(`
+      var goal = ${goal};
+      var current = ${current};
+      var rail = root.querySelector('[data-rail]');
+      var count = root.querySelector('[data-count]');
+      var btn = root.querySelector('[data-today]');
+      function fill(streak) { return Math.min(1, streak / goal) * 100; }
+      function sync() {
+        var on = btn.classList.contains('is-checked');
+        var streak = current + (on ? 1 : 0);
+        rail.style.width = fill(streak) + '%';
+        count.textContent = String(streak);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        root.dispatchEvent(new CustomEvent('wg:change', {
+          detail: { streak: streak, goal: goal, checked: on }, bubbles: true
+        }));
+      }
+      function toggle() {
+        btn.classList.toggle('is-checked');
+        sync();
+      }
+      btn.addEventListener('click', toggle);
+      sync();
+      return function () { btn.removeEventListener('click', toggle); };
+    `)
+  },
+}
+
 export const sleepmode: WidgetSpec = {
   id: 'sleepmode',
   name: 'Mode Pill',
