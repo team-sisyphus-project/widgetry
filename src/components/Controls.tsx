@@ -114,6 +114,19 @@ function Field({
     )
   }
 
+  if (control.type === 'datetime') {
+    return (
+      <label className="field field--datetime">
+        <span className="field__label">{control.label}</span>
+        <input
+          type="datetime-local"
+          value={String(value)}
+          onChange={(e) => onChange(control.key, e.target.value)}
+        />
+      </label>
+    )
+  }
+
   return (
     <label className="field field--text">
       <span className="field__label">{control.label}</span>

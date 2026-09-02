@@ -396,7 +396,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   outline: none;
 }
 
-.field--text input, .field--select select {
+.field--text input, .field--select select, .field--datetime input {
   width: 100%;
   padding: 9px 11px;
   border: 1px solid var(--line);
@@ -407,7 +407,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .field--select select { width: 150px; }
-.field--text input:focus, .field--select select:focus, .field__hex:focus { border-color: var(--accent); }
+.field--text input:focus, .field--select select:focus, .field__hex:focus, .field--datetime input:focus { border-color: var(--accent); }
 
 .field input[type="range"] {
   width: 100%;
