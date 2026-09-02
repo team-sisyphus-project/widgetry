@@ -5,6 +5,7 @@ import { habitStreak } from './life'
 import { buildHash, parseRoute } from '../lib/share'
 import { mount, rootHtml } from '../lib/render'
 import { normalizeProps } from '../lib/types'
+import { buildTargets } from '../lib/export'
 
 /**
  * M-1 — Habit Streak shows up under the Life gallery filter and opens in the studio.
@@ -237,5 +238,92 @@ describe('M-3: todayChecked toggle reacts on the progress bar immediately', () =
     expect(count.textContent).toBe(String(current))
 
     dispose()
+  })
+})
+
+/**
+ * M-4 — all five export formats build error-free and render one identical value set.
+ *
+ * We drive the real export seam the studio uses — `buildTargets(spec, normalizeProps(...))`
+ * from `src/lib/export` — and inspect the five framework targets the Story ships:
+ * `html`, `react`, `vue`, `svelte`, `webcomponent`. (The incidental `css`/`config` targets
+ * are out of scope.) For each target we assert (a) it is present, (b) every emitted file has
+ * non-empty string content and the build never throws, and (c) the three user-visible values
+ * — streak count, goal, and the `--wg-fill` progress token — are byte-identical across all
+ * five, so no single format can silently drift from the others.
+ *
+ * The expected fill is recomputed independently from the raw inputs via the Spec formula
+ * `min(1, currentStreak/goalStreak) * 100%`, never read back from the widget, and only then
+ * cross-checked against `habitStreak.vars(props)['--wg-fill']`. A widget-side change to the
+ * fill math therefore fails here rather than agreeing with itself.
+ */
+describe('M-4: all five export formats build error-free with identical values', () => {
+  const FORMATS = ['html', 'react', 'vue', 'svelte', 'webcomponent'] as const
+
+  /** Spec formula, recomputed from raw inputs — the independent source of truth. */
+  const expectedFill = (currentStreak: number, goalStreak: number): string =>
+    `${Math.min(1, Math.max(0, currentStreak) / Math.max(1, goalStreak)) * 100}%`
+
+  /** Join every file's content for a target so a value can be found wherever it lands. */
+  const contentOf = (files: { content: string }[]): string => files.map((f) => f.content).join('\n')
+
+  /**
+   * Pull the `--wg-fill` assigned value out of a target's content, tolerating each format's
+   * quoting: `--wg-fill: 40%` (html/svelte/webcomponent) and `'--wg-fill': "40%"` /
+   * `'--wg-fill': '40%'` (react/vue). The CSS rule `width: var(--wg-fill)` has no colon after
+   * the token name, so it is never matched.
+   */
+  const fillFromContent = (content: string): string => {
+    const m = content.match(/--wg-fill['"]?\s*:\s*['"]?([^;'",}]+)/)
+    expect(m, '--wg-fill assignment missing from export content').not.toBeNull()
+    return m![1].trim()
+  }
+
+  const current = 12
+  const goal = 30
+  const props = normalizeProps(habitStreak, { currentStreak: current, goalStreak: goal })
+
+  it('emits all five framework targets with non-empty, throw-free file content', () => {
+    let targets!: ReturnType<typeof buildTargets>
+    expect(() => {
+      targets = buildTargets(habitStreak, props)
+    }).not.toThrow()
+
+    for (const id of FORMATS) {
+      const target = targets.find((t) => t.id === id)
+      expect(target, `export target "${id}" is missing`).toBeDefined()
+      expect(target!.files.length).toBeGreaterThan(0)
+      for (const file of target!.files) {
+        expect(typeof file.content, `${id}/${file.name} content must be a string`).toBe('string')
+        expect(file.content.trim().length, `${id}/${file.name} content must be non-empty`).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('renders the same count, goal and --wg-fill across all five formats', () => {
+    const targets = buildTargets(habitStreak, props)
+
+    // Recompute the fill independently, then confirm the widget itself agrees before use.
+    const wantFill = expectedFill(current, goal)
+    expect(wantFill).toBe('40%')
+    expect(habitStreak.vars(props)['--wg-fill']).toBe(wantFill)
+
+    const fills = new Set<string>()
+    for (const id of FORMATS) {
+      const content = contentOf(targets.find((t) => t.id === id)!.files)
+
+      // Streak count (tolerant of the whitespace React's JSX inserts around text nodes).
+      expect(/>\s*12\s*</.test(content), `count 12 missing from "${id}"`).toBe(true)
+      // Goal, rendered as `/ 30d` in the head of every format.
+      expect(content.includes('30d'), `goal 30d missing from "${id}"`).toBe(true)
+
+      const fill = fillFromContent(content)
+      expect(fill, `"${id}" fill diverges`).toBe(wantFill)
+      fills.add(fill)
+    }
+
+    // Every format collapsed to a single fill value — none drifted.
+    expect(fills.size).toBe(1)
+    expect([...fills]).toEqual([wantFill])
   })
 })
