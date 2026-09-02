@@ -168,3 +168,76 @@ describe('countdown tick engine — expiry clamp (M-3)', () => {
     expect(host.querySelector('.wg-countdown__grid')!.classList.contains('is-expired')).toBe(true)
   })
 })
+
+describe('countdown displayMode toggle — layout switches within the next tick (M-4)', () => {
+  /**
+   * Design Spec (event-countdown/base.md) documents exactly two layouts behind
+   * `displayMode`: the breakdown grid (four day/hr/min/sec cells) and the single
+   * "D-n" tag. M-4's pass bar is that toggling between them lands "within the
+   * next tick" — i.e. the studio's props-change re-mount swaps the layout before
+   * any full 1s interval fires, so the switch never waits on the tick engine.
+   *
+   * The studio changes a control by re-running `mount()` on the same host (the
+   * `Live`/props-change path). `mount()` disposes the prior script (clearing its
+   * interval) and rewrites `host.innerHTML` synchronously, so the new layout is
+   * in the DOM the instant the re-mount returns. To prove there is no dependence
+   * on the 1s interval we assert the swap immediately and again after
+   * `advanceTimersByTime(0)` (the next tick) — never advancing a whole second.
+   */
+
+  const FUTURE = 3 * MINUTE // well clear of expiry so both layouts are "live"
+
+  /** Re-mount the widget on the same host with new props (studio props-change). */
+  function remount(displayMode: 'breakdown' | 'dday'): void {
+    dispose()
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      displayMode,
+      targetDate: targetAt(FUTURE),
+    })
+  }
+
+  const hasGrid = () => host.querySelector('.wg-countdown__grid') !== null
+  const hasDday = () => host.querySelector('[data-dday]') !== null
+
+  it('breakdown → dday: grid gives way to the D-day tag before a full second passes', () => {
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      displayMode: 'breakdown',
+      targetDate: targetAt(FUTURE),
+    })
+    // First paint is the breakdown grid, no D-day tag.
+    expect(hasGrid()).toBe(true)
+    expect(hasDday()).toBe(false)
+
+    remount('dday')
+    // Switched synchronously on re-mount — the 1s interval has not fired yet.
+    expect(vi.getTimerCount()).toBe(1) // exactly the fresh widget's interval
+    expect(hasDday()).toBe(true)
+    expect(hasGrid()).toBe(false)
+
+    // Still switched after only the next tick elapses (0ms), never a whole second.
+    vi.advanceTimersByTime(0)
+    expect(hasDday()).toBe(true)
+    expect(hasGrid()).toBe(false)
+  })
+
+  it('dday → breakdown: the tag gives way to the grid before a full second passes', () => {
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      displayMode: 'dday',
+      targetDate: targetAt(FUTURE),
+    })
+    expect(hasDday()).toBe(true)
+    expect(hasGrid()).toBe(false)
+
+    remount('breakdown')
+    expect(vi.getTimerCount()).toBe(1)
+    expect(hasGrid()).toBe(true)
+    expect(hasDday()).toBe(false)
+
+    vi.advanceTimersByTime(0)
+    expect(hasGrid()).toBe(true)
+    expect(hasDday()).toBe(false)
+  })
+})
