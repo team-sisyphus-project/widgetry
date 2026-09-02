@@ -497,6 +497,126 @@ describe('contact-card QR encodes the target (M-2)', () => {
   }
 })
 
+/*
+ * M-4: all five export formats build without error and show identical values.
+ *
+ * The story's M-4 measure ("HTML/React/Vue/Svelte/웹컴포넌트 export 시 에러 없이
+ * 동일 값 렌더") lands on the public export API here rather than in a browser.
+ * M-2 already pins the QR path and M-3 the contact string; this block closes the
+ * remaining display gap — the `wg-contact-card__name` and `wg-contact-card__title`
+ * text — and proves it, byte-for-byte, against the canonical `spec.markup(props)`
+ * across all five shipped formats. It also re-asserts the two structural
+ * guarantees at non-default props: every target builds with non-empty files, and
+ * an empty title drops the title area in every format.
+ *
+ * We reuse the countdown M-5 `contentOf` anchor extraction and the React
+ * whitespace-reflow tolerance (`\s*`): every framework target embeds the widget
+ * markup verbatim except React, which reflows whitespace via `htmlToJsx`, so the
+ * name/title anchors are read with `\s*` padding and trimmed before comparison.
+ */
+describe('contact-card export parity (M-4)', () => {
+  const spec = getWidget('contact-card')!
+  const base = defaultProps(spec)
+  const FRAMEWORK_TARGETS = ['html', 'react', 'vue', 'svelte', 'webcomponent'] as const
+
+  // Non-default values for every content control the story specifies.
+  const CUSTOM = {
+    name: `O'Brien & "Sons" <Studio>`,
+    title: 'Head of R&D',
+    contactInfo: 'ob@example.co & +1 (555) 000-1111',
+    qrTarget: 'https://widgetry.dev/u/obrien?ref=card',
+  }
+
+  /** Concatenated contents of every file a target ships (React ships .tsx + .css). */
+  function contentOf(targets: ReturnType<typeof buildTargets>, id: string): string {
+    const target = targets.find((t) => t.id === id)
+    if (!target) throw new Error(`missing export target: ${id}`)
+    return target.files.map((f) => f.content).join('\n')
+  }
+
+  /** Reverse `esc` so we compare the text a visitor actually reads. */
+  function decodeEntities(s: string): string {
+    return s
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+  }
+
+  // Anchors matching raw HTML (`class=`) and React JSX (`className=`); `\s*` absorbs reflow.
+  const NAME_RE = /class(?:Name)?="wg-contact-card__name"[^>]*>\s*([\s\S]*?)\s*<\/strong>/
+  const TITLE_RE = /class(?:Name)?="wg-contact-card__title"[^>]*>\s*([\s\S]*?)\s*<\/span>/
+
+  /** Displayed name text pulled out of any rendered/exported output. */
+  function nameText(content: string): string {
+    const m = content.match(NAME_RE)
+    if (!m) throw new Error('no wg-contact-card__name region found')
+    return decodeEntities(m[1].trim())
+  }
+
+  /** Displayed title text, or null when the title area is absent. */
+  function titleText(content: string): string | null {
+    const m = content.match(TITLE_RE)
+    return m ? decodeEntities(m[1].trim()) : null
+  }
+
+  it('builds all five formats without throwing, each with non-empty files (custom props)', () => {
+    const props = { ...base, ...CUSTOM }
+
+    let targets: ReturnType<typeof buildTargets> | undefined
+    expect(() => {
+      targets = buildTargets(spec, props)
+    }).not.toThrow()
+
+    const ids = (targets ?? []).map((t) => t.id)
+    for (const id of FRAMEWORK_TARGETS) expect(ids).toContain(id)
+
+    for (const id of FRAMEWORK_TARGETS) {
+      const target = targets!.find((t) => t.id === id)!
+      expect(target.files.length).toBeGreaterThan(0)
+      for (const file of target.files) expect(file.content.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('shows one identical name and title across all five formats (canonical parity)', () => {
+    const props = { ...base, ...CUSTOM }
+    const targets = buildTargets(spec, props)
+
+    const canonicalName = nameText(spec.markup(props))
+    const canonicalTitle = titleText(spec.markup(props))
+    expect(canonicalName).toBe(CUSTOM.name)
+    expect(canonicalTitle).toBe(CUSTOM.title)
+
+    for (const id of FRAMEWORK_TARGETS) {
+      const content = contentOf(targets, id)
+      expect(nameText(content)).toBe(canonicalName)
+      expect(titleText(content)).toBe(canonicalTitle)
+    }
+  })
+
+  it('drops the title area in every format when the title is empty', () => {
+    for (const emptyTitle of ['', '   ']) {
+      const props = { ...base, ...CUSTOM, title: emptyTitle }
+
+      // Canonical markup omits the title node entirely (markup carries no CSS,
+      // so the class string only appears when the title element is rendered).
+      expect(spec.markup(props)).not.toContain('wg-contact-card__title')
+
+      const targets = buildTargets(spec, props)
+      for (const id of FRAMEWORK_TARGETS) {
+        const content = contentOf(targets, id)
+        // No `class="wg-contact-card__title">…</span>` element in the shipped
+        // output. (A bare `.wg-contact-card__title` CSS selector may still exist;
+        // the element-anchored regex ignores it.)
+        expect(titleText(content)).toBeNull()
+        // The name still renders, so the head is intact — only the title dropped.
+        expect(nameText(content)).toBe(CUSTOM.name)
+      }
+    }
+  })
+})
+
 describe('qr byte-mode encoder', () => {
   it('produces the canonical 21x21 matrix for a version-1 payload', () => {
     const m = qrMatrix('HELLO')
