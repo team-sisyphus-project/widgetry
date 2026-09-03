@@ -98,6 +98,12 @@
   justify-content: center;
   width: 100%;
   flex: 1;
+  /*
+    Let the stage shrink below the card's un-scaled layout box. The card is a 3D,
+    visually scaled poster, so its layout height must not push the primary entry
+    button out of the first viewport on short screens.
+  */
+  min-height: 0;
   perspective: 1400px;
   perspective-origin: 50% 45%;
 }
@@ -208,24 +214,68 @@
   color: #4d4f59;
 }
 
+/*
+  Secondary (ghost). The card CTA is demoted so the flat plate button is the only
+  solid-fill "one strong button". Fill is the hierarchy signal: solid primary >
+  ghost secondary > plain caption. No new visual language — just a standard ghost
+  treatment (transparent fill, low-contrast neutral border, softened ink).
+*/
 .landing__cta {
   display: block;
+  box-sizing: border-box; /* border must not push width:100% past the card body */
   width: 100%;
-  padding: 17px 20px;
+  min-height: 44px; /* spacing/touch-target-min */
+  padding: 16px 20px; /* spacing/action-padding-y-ghost 16px + spacing/action-padding-x 20px — ghost 1px 테두리 광학 보정(border-box) */
+  border: 1px solid #c9cbd6; /* color/action-ghost-border */
+  border-radius: 14px; /* radius/base */
+  background: transparent;
+  color: #3a3c45; /* color/action-ghost-fg */
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -.005em;
+  cursor: pointer;
+  transition: background .2s ease, border-color .2s ease, transform .15s ease;
+}
+
+.landing__cta:hover { background: rgba(13, 14, 18, .05); } /* color/action-ghost-bg-hover */
+.landing__cta:active { transform: translateY(1px); }
+.landing__cta:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; } /* focus/base + color/focus-ring */
+
+/* ----------------------------------------------------------------- entry -- */
+
+/*
+  The primary entry lives on the flat poster plate, outside the tilted card, so it
+  reads as an obvious button and is never clipped by the 3D projection. Hierarchy:
+  primary (this button) > secondary (card CTA) > caption (plain supporting text).
+*/
+.landing__entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px; /* spacing/stack-gap-entry */
+  flex: 0 0 auto;
+}
+
+.landing__enter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px; /* spacing/touch-target-min */
+  padding: 17px 28px; /* spacing/action-padding-y, action-padding-x-primary */
   border: 0;
   border-radius: 14px;
   background: #0d0e12;
   color: #fff;
-  font-size: 14.5px;
+  font-size: 15px; /* typography/text-size-action-primary */
   font-weight: 500;
   letter-spacing: -.005em;
   cursor: pointer;
   transition: background .2s ease, transform .15s ease;
 }
 
-.landing__cta:hover { background: #23252e; }
-.landing__cta:active { transform: translateY(1px); }
-.landing__cta:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; }
+.landing__enter:hover { background: #23252e; }
+.landing__enter:active { transform: translateY(1px); }
+.landing__enter:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; }
 
 /* --------------------------------------------------------------- caption -- */
 
@@ -236,25 +286,9 @@
   text-align: center;
 }
 
-.landing__hint--coarse { display: none; }
-
 @media (pointer: coarse) {
-  .landing__hint--coarse { display: inline; }
   .landing__card { transform: rotateX(4deg) rotateY(-5deg); }
 }
-
-.landing__caption button {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: #4a44d8;
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-
-.landing__caption button:hover { color: #2b25b8; }
 
 /* ---------------------------------------------------------------- narrow -- */
 
