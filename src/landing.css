@@ -239,7 +239,6 @@
 .landing__hint--coarse { display: none; }
 
 @media (pointer: coarse) {
-  .landing__hint--fine { display: none; }
   .landing__hint--coarse { display: inline; }
   .landing__card { transform: rotateX(4deg) rotateY(-5deg); }
 }

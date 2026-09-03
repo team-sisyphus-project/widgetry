@@ -30,6 +30,7 @@ export type Control =
       options: { value: string; label: string }[]
     }
   | { key: string; label: string; group?: string; type: 'text'; default: string; maxLength?: number }
+  | { key: string; label: string; group?: string; type: 'datetime'; default: string }
 
 export type Props = Record<string, ControlValue>
 
@@ -87,6 +88,7 @@ export function normalizeProps(spec: WidgetSpec, incoming: Partial<Props> | unde
     else if (c.type === 'boolean' && typeof v === 'boolean') base[c.key] = v
     else if (c.type === 'color' && typeof v === 'string') base[c.key] = v
     else if (c.type === 'text' && typeof v === 'string') base[c.key] = v
+    else if (c.type === 'datetime' && typeof v === 'string') base[c.key] = v
     else if (c.type === 'select' && typeof v === 'string' && c.options.some((o) => o.value === v))
       base[c.key] = v
   }
