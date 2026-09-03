@@ -146,7 +146,7 @@ export const habitStreak: WidgetSpec = {
   id: 'habit-streak',
   name: 'Habit Streak',
   category: 'life',
-  blurb: '연속 며칠째 이어가고 있는지 보여주는 습관 트래커',
+  blurb: 'A habit tracker that shows how many days in a row you have kept a streak going',
   tags: ['life', 'habit', 'streak'],
   frame: { w: 220, h: 200 },
   interactive: true,

@@ -117,8 +117,8 @@ describe('contact-card export targets', () => {
 /*
  * M-3: the contact string is displayed on the card exactly as entered.
  *
- * The browser-level M-3 check ("입력한 연락처 문자열이 카드 내 지정 영역에 그대로
- * 렌더링됨") lands here on the public render/export API instead of a browser
+ * The browser-level M-3 check ("the entered contact string renders verbatim in the designated
+ * area of the card") lands here on the public render/export API instead of a browser
  * runner. We read the `wg-contact-card__contact` region byte-for-byte from the
  * canonical `spec.markup(props)` and from all five shipped export formats, and
  * prove the *displayed* text equals the input for emails, phone numbers, URLs
@@ -500,8 +500,8 @@ describe('contact-card QR encodes the target (M-2)', () => {
 /*
  * M-4: all five export formats build without error and show identical values.
  *
- * The story's M-4 measure ("HTML/React/Vue/Svelte/웹컴포넌트 export 시 에러 없이
- * 동일 값 렌더") lands on the public export API here rather than in a browser.
+ * The story's M-4 measure ("HTML/React/Vue/Svelte/web-component exports render the same
+ * values without errors") lands on the public export API here rather than in a browser.
  * M-2 already pins the QR path and M-3 the contact string; this block closes the
  * remaining display gap — the `wg-contact-card__name` and `wg-contact-card__title`
  * text — and proves it, byte-for-byte, against the canonical `spec.markup(props)`

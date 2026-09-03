@@ -225,7 +225,7 @@
   box-sizing: border-box; /* border must not push width:100% past the card body */
   width: 100%;
   min-height: 44px; /* spacing/touch-target-min */
-  padding: 16px 20px; /* spacing/action-padding-y-ghost 16px + spacing/action-padding-x 20px — ghost 1px 테두리 광학 보정(border-box) */
+  padding: 16px 20px; /* spacing/action-padding-y-ghost 16px + spacing/action-padding-x 20px — optical compensation for the ghost 1px border (border-box) */
   border: 1px solid #c9cbd6; /* color/action-ghost-border */
   border-radius: 14px; /* radius/base */
   background: transparent;
