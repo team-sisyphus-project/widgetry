@@ -1,116 +1,127 @@
-# Widgetry 기획서 v0.1
+# Widgetry Product Spec v0.1
 
-작성일 2026-08-31
+Written 2026-08-31
 
-## 1. 한 줄 정의
+## 1. One-line definition
 
-살아 움직이는 UI 유틸리티를 보고, 고치고, 내 프로젝트로 가져가는 곳.
-설치하는 컴포넌트 라이브러리가 아니라 "가져가는" 서비스다.
+A place to see living, moving UI utilities, tweak them, and take them into your own project.
+Not a component library you install, but a service you "take from."
 
-## 2. 문제 정의
+## 2. Problem statement
 
-레퍼런스 영상에 나오는 종류의 UI 유틸리티(시계, 날씨 카드, 배터리 미터, 토글,
-컴퍼스, 파형 스크러버, 체크리스트, 액체 게이지, 카드 스택, 아젠다)는 세 가지
-경로로만 유통되고 있고, 셋 다 결함이 있다.
+The kinds of UI utilities seen in the reference video (clock, weather card, battery
+meter, toggle, compass, waveform scrubber, checklist, liquid gauge, card stack,
+agenda) are distributed through only three channels, and all three are flawed.
 
-1. 드리블/비핸스 이미지: 코드가 없다. 보고 다시 만들어야 한다.
-2. npm 컴포넌트 라이브러리: 코드는 있지만 의존성과 버전, 디자인 시스템이 통째로
-   따라온다. 위젯 하나 때문에 라이브러리 하나를 떠안는다.
-3. 코드펜 스니펫: 가져올 수는 있으나 상태가 제각각이고, 라이선스가 불명확하며,
-   내 프레임워크 포맷이 아닌 경우가 대부분이다.
+1. Dribbble/Behance images: no code. You have to look and rebuild it yourself.
+2. npm component libraries: the code exists, but the dependencies, versions, and
+   design system come along wholesale. You take on an entire library for the sake of
+   one widget.
+3. CodePen snippets: you can take them, but their quality varies, the license is
+   unclear, and most of the time they are not in your framework's format.
 
-세 경우 모두 "이거 하나만 딱 필요한데"라는 수요를 충족하지 못한다.
+None of the three satisfies the demand of "I just need this one thing."
 
-## 3. 제공 가치
+## 3. Value proposition
 
-오픈소스를 건네주는 것과 같은 가치, 즉 **완성되어 있고, 읽을 수 있고, 아무 조건이
-붙지 않은 코드**를 그 자리에서 준다. 세 단계로 구성한다.
+The same value as handing someone open source: **code that is finished, readable,
+and comes with no strings attached**, delivered on the spot. It is structured in
+three steps.
 
-| 단계 | 사용자 행동 | 서비스가 보장하는 것 |
+| Step | User action | What the service guarantees |
 | --- | --- | --- |
-| 본다 | 갤러리에서 실제로 움직이는 타일을 본다 | 스크린샷이 아니라 실행 중인 결과물 |
-| 고친다 | 색, 크기, 문구, 동작을 조절한다 | 조절 즉시 결과와 코드가 함께 바뀜 |
-| 가져간다 | 포맷을 골라 복사하거나 내려받는다 | 7종 포맷, MIT, 런타임 의존성 0 |
+| See | View tiles actually moving in the gallery | A running result, not a screenshot |
+| Tweak | Adjust colors, sizes, copy, behavior | The result and the code change together the moment you adjust |
+| Take | Pick a format and copy or download | 7 formats, MIT, zero runtime dependencies |
 
-## 4. 핵심 설계 원칙
+## 4. Core design principles
 
-### 4.1 단일 소스 원칙
+### 4.1 Single-source principle
 
-위젯 하나는 순수 함수 세 개로만 정의된다.
+A widget is defined by exactly three pure functions.
 
 ```
-markup(props) -> HTML 문자열
-css(props)    -> CSS 문자열
-script(props) -> function (root) { ... } 의 본문
+markup(props) -> HTML string
+css(props)    -> CSS string
+script(props) -> body of function (root) { ... }
 ```
 
-프리뷰도 이 문자열을 실행하고, 7종 내보내기 생성기도 전부 같은 문자열에서
-파생된다. 구현이 두 벌 존재하지 않으므로 "프리뷰에서 본 것과 내려받은 파일이
-다르다"는 사고가 구조적으로 발생할 수 없다. 이것이 이 제품의 신뢰 근거다.
+The preview executes these strings, and all 7 export generators derive from the
+same strings. Since no second implementation exists, the accident of "what I saw
+in the preview differs from the file I downloaded" is structurally impossible.
+This is the product's basis of trust.
 
-### 4.2 토큰 외부화 원칙
+### 4.2 Token externalization principle
 
-모든 색과 치수는 루트 엘리먼트의 CSS 커스텀 프로퍼티로 노출한다. 위젯 내부를
-열지 않고도 재테마가 가능해야 한다. React 내보내기는 이를 타입이 붙은 `tokens`
-객체로 공개하고 `style` 오버라이드를 받는다.
+All colors and dimensions are exposed as CSS custom properties on the root
+element. Re-theming must be possible without opening the widget's internals. The
+React export publishes these as a typed `tokens` object and accepts `style`
+overrides.
 
-### 4.3 무의존 원칙
+### 4.3 Zero-dependency principle
 
-내보낸 결과물은 어떤 패키지도 요구하지 않는다. ZIP 압축조차 브라우저 안에서
-자체 구현(store only ZIP writer)으로 처리해 서버 업로드가 없다.
+The exported output requires no packages whatsoever. Even ZIP compression is
+handled by an in-browser self-implementation (store-only ZIP writer), with no
+server upload.
 
-### 4.4 접근성 기본값
+### 4.4 Accessibility by default
 
-키보드 조작, `role`/`aria-*` 속성, `prefers-reduced-motion` 대응을 위젯 원본에
-포함한다. 내보낸 코드에도 그대로 실려 나간다.
+Keyboard operation, `role`/`aria-*` attributes, and `prefers-reduced-motion`
+support are included in the widget source. They ship as-is in the exported code.
 
-## 5. 범위
+## 5. Scope
 
-### 5.1 v0.1 포함 (완료)
+### 5.1 Included in v0.1 (complete)
 
-- 랜딩 화면: 3D 틸트 카드, 카드 면은 실제 위젯 스펙을 그대로 마운트한 라이브 콜라주.
-  CTA로 갤러리 진입. 라우트는 `/` 랜딩, `#/gallery` 갤러리, `#/w/<id>` 스튜디오
-- 위젯 15종: 시계, 밝기 슬라이더, 날씨 카드, 플레이어, 라벨 스위치, 충전 미터,
-  음성 스크러버, 컴퍼스, 모드 필, 투두 리스트, 액체 게이지, 카드 스택, 아젠다,
-  시그널 오브, 레코드 키
-- 카테고리 5종(Time / System / Media / Data / Life) 필터와 검색
-- 스튜디오: 라이브 스테이지(배경 3종), 리플레이, 컨트롤 패널, 리셋
-- 내보내기 7종: HTML, React, Vue, Svelte, Web Component, HTML+CSS, Config
-- 파일 단위 복사, 파일 단위 다운로드, 타깃 단위 ZIP, 전체 포맷 ZIP
-- 빌드 공유 링크(URL에 설정값 인코딩), 클립보드 Config 되돌리기
-- 검증 스크립트: 전 위젯 전 포맷을 디스크로 뽑아 실제 실행과 타입 체크로 확인
+- Landing screen: 3D tilt card whose faces are a live collage mounting the actual
+  widget specs. CTA leads into the gallery. Routes are `/` landing, `#/gallery`
+  gallery, `#/w/<id>` studio
+- 15 widgets: clock, brightness slider, weather card, player, labeled switch,
+  charge meter, voice scrubber, compass, mode pill, todo list, liquid gauge,
+  card stack, agenda, signal orb, record key
+- 5 categories (Time / System / Media / Data / Life) with filters and search
+- Studio: live stage (3 backgrounds), replay, control panel, reset
+- 7 export targets: HTML, React, Vue, Svelte, Web Component, HTML+CSS, Config
+- Per-file copy, per-file download, per-target ZIP, all-formats ZIP
+- Shareable build link (settings encoded in the URL), clipboard Config restore
+- Verification script: dumps every widget in every format to disk and verifies
+  with real execution and type checks
 
-### 5.2 v0.1 제외
+### 5.2 Excluded from v0.1
 
-- 계정, 저장, 결제
-- 사용자 업로드 위젯
-- Figma 플러그인
-- 서버 사이드 렌더링 프리셋
+- Accounts, saving, payments
+- User-uploaded widgets
+- Figma plugin
+- Server-side rendering presets
 
-## 6. 검증 기준과 결과
+## 6. Verification criteria and results
 
-| 기준 | 방법 | 결과 |
+| Criterion | Method | Result |
 | --- | --- | --- |
-| 내보낸 HTML이 실제로 실행되는가 | 15종 전부를 파일로 뽑아 브라우저에서 동시 실행 | 통과 |
-| 내보낸 React가 사용자 프로젝트에서 컴파일되는가 | strict 모드 `tsc --noEmit` 별도 실행 | 통과 |
-| ZIP이 정상 아카이브인가 | 브라우저 구현으로 생성 후 `unzip -t` | 통과 |
-| 공유 링크가 설정을 복원하는가 | 링크로 재진입해 토큰과 문구 대조 | 통과 |
+| Does the exported HTML actually run | Dumped all 15 to files and ran them simultaneously in a browser | Pass |
+| Does the exported React compile in a user project | Separate strict-mode `tsc --noEmit` run | Pass |
+| Is the ZIP a valid archive | Generated with the in-browser implementation, then `unzip -t` | Pass |
+| Does the share link restore settings | Re-entered via the link and compared tokens and copy | Pass |
 
-## 7. 다음 단계 후보
+## 7. Next-step candidates
 
-우선순위 순으로 나열한다. 착수 전 승인 대상이다.
+Listed in priority order. Each requires approval before starting.
 
-1. **레지스트리 배포**: 위젯별 `registry.json`을 정적 호스팅하고 `npx` 한 줄로
-   프로젝트에 파일을 떨어뜨리는 경로. shadcn 방식과 같은 유통 구조.
-2. **위젯 확장**: 30종 규모까지. 카테고리별 균형을 맞춘다.
-3. **Figma 반대 방향**: 위젯을 SVG로 뽑아 디자인 도구로 보내는 경로.
-4. **기여 경로**: 외부 기여자가 스펙 파일 하나로 위젯을 추가하는 PR 흐름.
-5. **호스팅**: 정적 배포. 빌드 산출물이 전부 정적이라 별도 백엔드가 필요 없다.
+1. **Registry distribution**: statically host a per-widget `registry.json` and
+   provide a path that drops files into a project with a single `npx` line. The
+   same distribution structure as the shadcn approach.
+2. **Widget expansion**: up to a scale of 30, keeping the categories balanced.
+3. **Figma, the other direction**: a path that exports widgets as SVG and sends
+   them to design tools.
+4. **Contribution path**: a PR flow where external contributors add a widget with
+   a single spec file.
+5. **Hosting**: static deployment. All build artifacts are static, so no separate
+   backend is needed.
 
-## 8. 리스크
+## 8. Risks
 
-| 리스크 | 성격 | 대응 |
+| Risk | Nature | Response |
 | --- | --- | --- |
-| 위젯 수가 적으면 재방문 이유가 약함 | 콘텐츠 | 확장을 2순위로 두되, 품질 하한을 낮추지 않음 |
-| 같은 위젯을 한 페이지에 두 벌 다른 설정으로 쓰면 클래스가 충돌 | 기술 | 현재는 스튜디오가 1회 1개만 렌더해 회피. 레지스트리 단계에서 클래스 접두사 옵션 도입 |
-| MIT로 전부 내주면 방어 자산이 없음 | 사업 | 방어 지점은 코드가 아니라 큐레이션과 스튜디오 경험. 의도된 선택 |
+| Few widgets means a weak reason to revisit | Content | Keep expansion at priority 2, without lowering the quality floor |
+| Using the same widget twice on one page with different settings causes class collisions | Technical | Currently avoided because the studio renders only one at a time. Introduce a class-prefix option at the registry stage |
+| Giving everything away under MIT leaves no defensive asset | Business | The moat is curation and the studio experience, not the code. A deliberate choice |
