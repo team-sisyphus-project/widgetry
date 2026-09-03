@@ -146,7 +146,19 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
                 Fifteen running widgets. Turn the knobs, then leave with HTML, React, Vue, Svelte or
                 a web component. MIT, no runtime, no attribution.
               </p>
-              <button className="landing__cta" type="button" onClick={onEnter}>
+              {/*
+                Secondary entry. Same visible label as the primary CTA (single
+                canonical entry phrase), but a distinct accessible name so a
+                screen reader does not read two identical "Enter the gallery"
+                controls back to back. The name still contains the visible label
+                to satisfy WCAG 2.5.3 (Label in Name).
+              */}
+              <button
+                className="landing__cta"
+                type="button"
+                onClick={onEnter}
+                aria-label="Enter the gallery (on the poster)"
+              >
                 Enter the gallery
               </button>
             </div>

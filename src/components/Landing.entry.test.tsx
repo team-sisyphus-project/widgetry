@@ -150,3 +150,69 @@ describe('landing entry — keyboard & accessibility regression (grain-2)', () =
     expect(card.style.getPropertyValue('--ry')).toBe('')
   })
 })
+
+/**
+ * Primary / secondary hierarchy + accessible-name distinction (grain-2).
+ *
+ * grain-1 decided the card CTA is demoted to a ghost secondary while the flat
+ * plate button stays the single solid primary, and that the two controls must
+ * carry distinct accessible names so a screen reader no longer reads two
+ * identical "Enter the gallery, button" items in a row. The distinct name must
+ * still contain the visible label to satisfy WCAG 2.5.3 (Label in Name).
+ *
+ * These read the DOM contract only (class identity + accessible name + visible
+ * text), not computed CSS: the visual ghost/solid split is a stylesheet concern,
+ * but the structural split (two distinct classes) and the accessibility split
+ * (two distinct names) are what the decision locks in.
+ */
+describe('landing entry — primary/secondary hierarchy & name distinction (grain-2)', () => {
+  const nameOf = (el: Element) =>
+    (el.getAttribute('aria-label') ?? el.textContent ?? '').trim()
+
+  it('keeps the primary as the plate button and the secondary inside the card', () => {
+    render(() => {})
+    const primary = container.querySelector('.landing__enter')!
+    const secondary = container.querySelector('.landing__cta')!
+    // Distinct controls, distinct roles in the hierarchy.
+    expect(primary).not.toBe(secondary)
+    expect(primary.closest('.landing__card')).toBeNull()
+    expect(secondary.closest('.landing__card')).not.toBeNull()
+  })
+
+  it('gives the two CTAs distinct accessible names (no back-to-back duplicate)', () => {
+    render(() => {})
+    const primary = container.querySelector('.landing__enter')!
+    const secondary = container.querySelector('.landing__cta')!
+    expect(nameOf(primary)).toBe('Enter the gallery')
+    expect(nameOf(secondary)).toBe('Enter the gallery (on the poster)')
+    expect(nameOf(primary)).not.toBe(nameOf(secondary))
+  })
+
+  it('keeps the secondary accessible name containing the visible label (WCAG 2.5.3)', () => {
+    render(() => {})
+    const secondary = container.querySelector('.landing__cta')!
+    // Visible label stays the single canonical entry phrase…
+    expect(secondary.textContent?.trim()).toBe('Enter the gallery')
+    // …and the accessible name still contains that visible label.
+    expect(nameOf(secondary)).toContain('Enter the gallery')
+  })
+
+  it('does not hide the secondary control from the accessibility tree', () => {
+    // Hiding an operable control from AT would strand keyboard users — the
+    // decision explicitly keeps it in the tree and only distinguishes the name.
+    render(() => {})
+    const secondary = container.querySelector('.landing__cta')!
+    expect(secondary.getAttribute('aria-hidden')).not.toBe('true')
+    expect(secondary.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('renders exactly one caption with the single pointer-agnostic phrase', () => {
+    render(() => {})
+    const captions = container.querySelectorAll('.landing__caption')
+    // One caption, one phrase — no coarse/desktop branch, no rival entry link.
+    expect(captions.length).toBe(1)
+    expect(captions[0].textContent?.trim()).toBe('Fifteen utilities are waiting.')
+    expect(captions[0].querySelector('a')).toBeNull()
+    expect(captions[0].querySelector('button')).toBeNull()
+  })
+})

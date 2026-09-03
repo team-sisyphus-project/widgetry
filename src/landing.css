@@ -214,24 +214,32 @@
   color: #4d4f59;
 }
 
+/*
+  Secondary (ghost). The card CTA is demoted so the flat plate button is the only
+  solid-fill "one strong button". Fill is the hierarchy signal: solid primary >
+  ghost secondary > plain caption. No new visual language — just a standard ghost
+  treatment (transparent fill, low-contrast neutral border, softened ink).
+*/
 .landing__cta {
   display: block;
+  box-sizing: border-box; /* border must not push width:100% past the card body */
   width: 100%;
-  padding: 17px 20px;
-  border: 0;
-  border-radius: 14px;
-  background: #0d0e12;
-  color: #fff;
+  min-height: 44px; /* spacing/touch-target-min */
+  padding: 16px 20px;
+  border: 1px solid #c9cbd6; /* color/action-ghost-border */
+  border-radius: 14px; /* radius/base */
+  background: transparent;
+  color: #3a3c45; /* color/action-ghost-fg */
   font-size: 14.5px;
   font-weight: 500;
   letter-spacing: -.005em;
   cursor: pointer;
-  transition: background .2s ease, transform .15s ease;
+  transition: background .2s ease, border-color .2s ease, transform .15s ease;
 }
 
-.landing__cta:hover { background: #23252e; }
+.landing__cta:hover { background: rgba(13, 14, 18, .05); } /* color/action-ghost-bg-hover */
 .landing__cta:active { transform: translateY(1px); }
-.landing__cta:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; }
+.landing__cta:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; } /* focus/base + color/focus-ring */
 
 /* ----------------------------------------------------------------- entry -- */
 
