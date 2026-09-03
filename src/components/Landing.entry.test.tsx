@@ -107,3 +107,46 @@ describe('landing entry — primary CTA discoverability (grain-2)', () => {
     expect(onEnter).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Keyboard + accessibility regression (grain-2).
+ *
+ * These lock the a11y guarantees the design decision depends on so a future
+ * refactor cannot silently drop them:
+ *   - the primary CTA stays in the natural tab order and is focusable (keyboard
+ *     reach → Enter/Space activation, which a native <button> provides);
+ *   - every entry control carries an accessible name (no unlabelled buttons);
+ *   - `prefers-reduced-motion: reduce` is honoured — the pointer-tilt rAF never
+ *     runs, so it writes no transform custom properties onto the card.
+ */
+describe('landing entry — keyboard & accessibility regression (grain-2)', () => {
+  it('keeps the primary CTA keyboard-reachable and focusable', () => {
+    render(() => {})
+    const primary = container.querySelector<HTMLButtonElement>('.landing__enter')!
+    // Not removed from the tab order and not disabled → reachable by Tab.
+    expect(primary.hasAttribute('disabled')).toBe(false)
+    expect(primary.getAttribute('tabindex')).toBeNull()
+    act(() => primary.focus())
+    expect(document.activeElement).toBe(primary)
+  })
+
+  it('gives every entry control a non-empty accessible name', () => {
+    render(() => {})
+    const buttons = Array.from(container.querySelectorAll('button'))
+    // At minimum the primary CTA and the card CTA are present.
+    expect(buttons.length).toBeGreaterThanOrEqual(2)
+    for (const button of buttons) {
+      const name = (button.getAttribute('aria-label') ?? button.textContent ?? '').trim()
+      expect(name.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('honours prefers-reduced-motion by not applying the pointer-tilt transform', () => {
+    // matchMedia is stubbed to report reduce=true, so the tilt rAF must bail out
+    // and leave the card's transform custom properties unset.
+    render(() => {})
+    const card = container.querySelector<HTMLElement>('.landing__card')!
+    expect(card.style.getPropertyValue('--rx')).toBe('')
+    expect(card.style.getPropertyValue('--ry')).toBe('')
+  })
+})
