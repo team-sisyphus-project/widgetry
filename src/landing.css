@@ -98,6 +98,12 @@
   justify-content: center;
   width: 100%;
   flex: 1;
+  /*
+    Let the stage shrink below the card's un-scaled layout box. The card is a 3D,
+    visually scaled poster, so its layout height must not push the primary entry
+    button out of the first viewport on short screens.
+  */
+  min-height: 0;
   perspective: 1400px;
   perspective-origin: 50% 45%;
 }
@@ -227,6 +233,42 @@
 .landing__cta:active { transform: translateY(1px); }
 .landing__cta:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; }
 
+/* ----------------------------------------------------------------- entry -- */
+
+/*
+  The primary entry lives on the flat poster plate, outside the tilted card, so it
+  reads as an obvious button and is never clipped by the 3D projection. Hierarchy:
+  primary (this button) > secondary (card CTA) > caption (plain supporting text).
+*/
+.landing__entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
+.landing__enter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 17px 28px;
+  border: 0;
+  border-radius: 14px;
+  background: #0d0e12;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -.005em;
+  cursor: pointer;
+  transition: background .2s ease, transform .15s ease;
+}
+
+.landing__enter:hover { background: #23252e; }
+.landing__enter:active { transform: translateY(1px); }
+.landing__enter:focus-visible { outline: 3px solid rgba(92, 84, 240, .5); outline-offset: 3px; }
+
 /* --------------------------------------------------------------- caption -- */
 
 .landing__caption {
@@ -236,25 +278,9 @@
   text-align: center;
 }
 
-.landing__hint--coarse { display: none; }
-
 @media (pointer: coarse) {
-  .landing__hint--coarse { display: inline; }
   .landing__card { transform: rotateX(4deg) rotateY(-5deg); }
 }
-
-.landing__caption button {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: #4a44d8;
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-
-.landing__caption button:hover { color: #2b25b8; }
 
 /* ---------------------------------------------------------------- narrow -- */
 

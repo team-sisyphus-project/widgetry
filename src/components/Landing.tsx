@@ -154,12 +154,17 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
         </div>
       </div>
 
-      <p className="landing__caption">
-        <span className="landing__hint landing__hint--coarse">Fifteen utilities are waiting, or </span>
-        <button type="button" onClick={onEnter}>
-          jump straight in
+      <div className="landing__entry">
+        <button
+          className="landing__enter"
+          type="button"
+          onClick={onEnter}
+          aria-label="Enter the gallery"
+        >
+          Enter the gallery
         </button>
-      </p>
+        <p className="landing__caption">Fifteen utilities are waiting.</p>
+      </div>
     </div>
   )
 }
