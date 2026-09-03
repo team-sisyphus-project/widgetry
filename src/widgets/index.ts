@@ -3,7 +3,7 @@ import { clock, agenda, countdown } from './time'
 import { battery, brightness, toggle, compass, signal } from './system'
 import { player, waveform, recordbutton } from './media'
 import { weather, waterwave, wallet, contactCard } from './data'
-import { checklist, sleepmode } from './life'
+import { checklist, habitStreak, sleepmode } from './life'
 
 export const WIDGETS: WidgetSpec[] = [
   clock,
@@ -16,6 +16,7 @@ export const WIDGETS: WidgetSpec[] = [
   compass,
   sleepmode,
   checklist,
+  habitStreak,
   waterwave,
   wallet,
   contactCard,
