@@ -222,3 +222,216 @@ export const agenda: WidgetSpec = {
     }
   `),
 }
+
+const MS_DAY = 86400000
+
+function pad2(n: number): string {
+  return (n < 10 ? '0' : '') + n
+}
+
+/** Remaining milliseconds until an ISO datetime string, clamped at zero (never negative). */
+export function remainingMs(targetDate: string): number {
+  const t = new Date(targetDate).getTime()
+  if (Number.isNaN(t)) return 0
+  return Math.max(0, t - Date.now())
+}
+
+/** Day/hour/minute/second decomposition of a remaining duration, plus the expiry state. */
+export interface Countdown {
+  /** input milliseconds clamped at zero — the countdown never runs negative (M-3) */
+  ms: number
+  /** true once the target is reached or passed */
+  expired: boolean
+  days: number
+  hours: number
+  mins: number
+  secs: number
+  /** D-day tag: `D-n` while counting down, `D-DAY` once expired */
+  dday: string
+}
+
+/**
+ * Pure decomposition of `ms` remaining into day/hour/minute/second units (M-2) with a
+ * zero floor so a passed target reads as an expired, all-zero state rather than negative
+ * time (M-3). Shared by `markup` here and mirrored by the browser `script` tick engine.
+ */
+export function breakdown(ms: number): Countdown {
+  const clamped = Math.max(0, Number.isFinite(ms) ? ms : 0)
+  const expired = clamped <= 0
+  const total = Math.floor(clamped / 1000)
+  return {
+    ms: clamped,
+    expired,
+    days: Math.floor(total / 86400),
+    hours: Math.floor((total % 86400) / 3600),
+    mins: Math.floor((total % 3600) / 60),
+    secs: total % 60,
+    dday: expired ? 'D-DAY' : 'D-' + Math.ceil(clamped / MS_DAY),
+  }
+}
+
+export const countdown: WidgetSpec = {
+  id: 'countdown',
+  name: 'Event Countdown',
+  category: 'time',
+  blurb: 'A live countdown to a target date, as a unit breakdown or a D-day tag.',
+  tags: ['time', 'countdown', 'event'],
+  frame: { w: 260, h: 260 },
+  controls: [
+    { key: 'targetDate', label: 'Target date', type: 'datetime', default: '2026-12-31T23:59' },
+    { key: 'label', label: 'Label', type: 'text', default: 'Sale ends in', maxLength: 40 },
+    {
+      key: 'displayMode',
+      label: 'Display',
+      type: 'select',
+      default: 'breakdown',
+      options: [
+        { value: 'breakdown', label: 'Breakdown' },
+        { value: 'dday', label: 'D-day' },
+      ],
+    },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#f2f2f2', group: 'Color' },
+    { key: 'accent', label: 'Accent', type: 'color', default: '#ff3b5c', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+  }),
+  markup: (p) => {
+    const b = breakdown(remainingMs(String(p.targetDate)))
+    const label = String(p.label ?? '').trim()
+    const labelHtml = label ? `<div class="wg-countdown__label">${esc(label)}</div>` : ''
+    const mode = String(p.displayMode) === 'dday' ? 'dday' : 'breakdown'
+    const expiredClass = b.expired ? ' is-expired' : ''
+    const body =
+      mode === 'dday'
+        ? `<div class="wg-countdown__dday${expiredClass}" data-dday>${esc(b.dday)}</div>`
+        : dedent(`
+            <div class="wg-countdown__grid${expiredClass}">
+              <div class="wg-countdown__cell"><span class="wg-countdown__num" data-unit="days">${b.days}</span><span class="wg-countdown__unit">Days</span></div>
+              <div class="wg-countdown__cell"><span class="wg-countdown__num" data-unit="hours">${pad2(b.hours)}</span><span class="wg-countdown__unit">Hrs</span></div>
+              <div class="wg-countdown__cell"><span class="wg-countdown__num" data-unit="minutes">${pad2(b.mins)}</span><span class="wg-countdown__unit">Min</span></div>
+              <div class="wg-countdown__cell wg-countdown__cell--accent"><span class="wg-countdown__num" data-unit="seconds">${pad2(b.secs)}</span><span class="wg-countdown__unit">Sec</span></div>
+            </div>
+            <div class="wg-countdown__ended">Ended</div>
+          `)
+    return dedent(`
+      ${labelHtml}
+      ${body}
+    `)
+  },
+  css: () => dedent(`
+    .wg-countdown {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      width: 260px;
+      height: 260px;
+      padding: 24px;
+      box-sizing: border-box;
+      border-radius: 28px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 600 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      text-align: center;
+    }
+    .wg-countdown__label {
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      opacity: .6;
+    }
+    .wg-countdown__grid {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .wg-countdown__cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      min-width: 46px;
+    }
+    .wg-countdown__num {
+      font-size: 34px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .wg-countdown__cell--accent .wg-countdown__num { color: var(--wg-accent); }
+    .wg-countdown__unit {
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      opacity: .55;
+    }
+    .wg-countdown__dday {
+      font-size: 60px;
+      font-weight: 700;
+      letter-spacing: -.03em;
+      line-height: 1;
+      color: var(--wg-accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .wg-countdown__ended {
+      display: none;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--wg-accent);
+    }
+    .wg-countdown__grid.is-expired + .wg-countdown__ended { display: block; }
+    .wg-countdown__grid.is-expired .wg-countdown__num { color: var(--wg-accent); opacity: .7; }
+  `),
+  script: (p) => {
+    const t = new Date(String(p.targetDate)).getTime()
+    const mode = String(p.displayMode) === 'dday' ? 'dday' : 'breakdown'
+    return dedent(`
+      var target = ${Number.isNaN(t) ? 'NaN' : t};
+      var mode = '${mode}';
+      var grid = root.querySelector('.wg-countdown__grid');
+      var dday = root.querySelector('[data-dday]');
+      var units = {
+        days: root.querySelector('[data-unit="days"]'),
+        hours: root.querySelector('[data-unit="hours"]'),
+        minutes: root.querySelector('[data-unit="minutes"]'),
+        seconds: root.querySelector('[data-unit="seconds"]')
+      };
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+      function tick() {
+        var ms = isNaN(target) ? 0 : target - Date.now();
+        var expired = ms <= 0;
+        if (expired) ms = 0;
+        if (mode === 'dday') {
+          if (dday) {
+            dday.textContent = expired ? 'D-DAY' : 'D-' + Math.ceil(ms / 86400000);
+            dday.classList.toggle('is-expired', expired);
+          }
+          return;
+        }
+        if (grid) grid.classList.toggle('is-expired', expired);
+        var total = Math.floor(ms / 1000);
+        var days = Math.floor(total / 86400);
+        var hours = Math.floor((total % 86400) / 3600);
+        var mins = Math.floor((total % 3600) / 60);
+        var secs = total % 60;
+        if (units.days) units.days.textContent = String(days);
+        if (units.hours) units.hours.textContent = pad2(hours);
+        if (units.minutes) units.minutes.textContent = pad2(mins);
+        if (units.seconds) units.seconds.textContent = pad2(secs);
+      }
+      tick();
+      var timer = setInterval(tick, 1000);
+      return function () { clearInterval(timer); };
+    `)
+  },
+}
