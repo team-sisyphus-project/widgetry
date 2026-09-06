@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Props, WidgetSpec } from './types'
 import { defaultProps } from './types'
-import { buildTargets, readmeFor, type ExportTarget } from './export'
+import { buildTargets, readmeFor, type ExportFile, type ExportTarget } from './export'
 import { WIDGETS } from '../widgets'
 
 /**
@@ -9,19 +9,24 @@ import { WIDGETS } from '../widgets'
  *
  * `added` is gallery-only chrome that happens to live on the same `WidgetSpec`
  * object the export pipeline reads from, so nothing structural stops a careless
- * change from threading it into a template. This suite is that stop, in two
+ * change from threading it into a template. This suite is that stop, in three
  * layers:
  *
- *   1. Byte identity - for every target, every file, the export of a spec with
- *      `added` set is byte-for-byte the export of the same spec without it.
- *      This is the strong guarantee: it catches any leak, in any shape, whether
- *      or not it looks like a badge.
- *   2. Leak markers - the added-set output is scanned for the concrete strings a
+ *   1. Byte identity - the export of a spec with `added` set is byte-for-byte the
+ *      export of the same spec without it, across the whole shipped bundle: every
+ *      target's label and hint, every file's name, language and content, and the
+ *      README that ships beside them. This is the strong guarantee: it catches any
+ *      leak, in any shape, whether or not it looks like a badge.
+ *   2. Leak markers - the added-set bundle is scanned for the concrete strings a
  *      leak would produce (`added`, the gallery's `card__new` class, badge-shaped
- *      "New" markup). This is the readable guarantee: when layer 1 fails, layer 2
- *      names what leaked.
+ *      "New" markup), over those same surfaces rather than file bodies alone.
+ *      This is the readable guarantee: when layer 1 fails, layer 2 names what
+ *      leaked and where.
+ *   3. Fault injection - badge strings are deliberately planted into a target to
+ *      prove layers 1 and 2 actually react. A guard that cannot fail is not a
+ *      guard.
  *
- * Both layers run over the whole live catalog and over a synthetic spec, so the
+ * Layers 1 and 2 run over the whole live catalog and over a synthetic spec, so the
  * suite is spec-agnostic: no widget has to opt in, and a widget added tomorrow is
  * covered the day it lands.
  */
@@ -45,9 +50,11 @@ const ADDED_VALUES = [
  * Strings that only a leak can put in an export.
  *
  * Deliberately narrow. A bare "New" is not a marker: a widget may legitimately
- * be named "New Year" one day, and `new Date(` already appears in exported
- * scripts. What cannot legitimately appear is the field name, the gallery's own
- * class, or badge-shaped markup carrying the label.
+ * be named "New Year" one day - and that name reaches file names too, via the
+ * component filenames the React/Vue/Svelte targets derive from it - while
+ * `new Date(` already appears in exported scripts. What cannot legitimately
+ * appear is the field name, the gallery's own class, or badge-shaped markup
+ * carrying the label.
  */
 const LEAK_MARKERS: { label: string; pattern: RegExp }[] = [
   { label: 'the `added` field name', pattern: /\badded\b/i },
@@ -56,28 +63,65 @@ const LEAK_MARKERS: { label: string; pattern: RegExp }[] = [
   { label: 'a "New" badge label attribute', pattern: /(?:class|className|aria-label)\s*=\s*["'{][^"'}]*\bNew\b/ },
 ]
 
-/** Concatenated contents of every file every target ships, plus the README. */
-function corpusOf(spec: WidgetSpec, props: Props): string {
-  const files = buildTargets(spec, props).flatMap((t) => t.files)
-  return [...files, readmeFor(spec, props)].map((f) => f.content).join('\n')
-}
+/** One scannable string of a bundle, tagged with where it came from. */
+type Surface = { where: string; text: string }
 
-/** Marker labels present in `content`. Empty means clean. */
-function findLeaks(content: string): string[] {
-  return LEAK_MARKERS.filter((m) => m.pattern.test(content)).map((m) => m.label)
+/**
+ * Every string a target puts in front of a user. Not just file bodies: the name
+ * each file is saved under, and the label and hint the studio prints beside the
+ * target - a `card__new.css` in a download or a "New" ribbon on a target label
+ * would be just as much a leak, and a content-only scan would walk past both.
+ */
+function targetSurfaces(target: ExportTarget): Surface[] {
+  return [
+    { where: `${target.id} label`, text: target.label },
+    { where: `${target.id} hint`, text: target.hint },
+    ...target.files.flatMap((f) => [
+      { where: `${target.id} file name "${f.name}"`, text: f.name },
+      { where: `${target.id} file "${f.name}"`, text: f.content },
+    ]),
+  ]
 }
 
 /**
- * Flatten a target to a comparable string: id, label, hint and every file's
- * name, language and content. Comparing the flattening rather than the object
- * keeps a diff readable when it fails.
+ * Every surface of the whole shipped bundle: all targets plus the README, which
+ * every download carries alongside them and which quotes each target's hint and
+ * file names back to the reader.
  */
+function bundleSurfaces(spec: WidgetSpec, props: Props): Surface[] {
+  const readme = readmeFor(spec, props)
+  return [
+    ...buildTargets(spec, props).flatMap(targetSurfaces),
+    { where: 'README file name', text: readme.name },
+    { where: 'README', text: readme.content },
+  ]
+}
+
+/** Marker labels present in `text`. Empty means clean. */
+function findLeaks(text: string): string[] {
+  return LEAK_MARKERS.filter((m) => m.pattern.test(text)).map((m) => m.label)
+}
+
+/** `"<where>: <marker>"` for every leak across `surfaces`. Empty means clean. */
+function leaksIn(surfaces: Surface[]): string[] {
+  return surfaces.flatMap((s) => findLeaks(s.text).map((m) => `${s.where}: ${m}`))
+}
+
+/**
+ * Flatten a file to a comparable string: name, language and content. Comparing
+ * the flattening rather than the object keeps a diff readable when it fails.
+ */
+function flattenFile(file: ExportFile): string {
+  return `--- ${file.name} (${file.language})\n${file.content}`
+}
+
+/** Flatten a target: id, label, hint and every file it ships. */
 function flatten(target: ExportTarget): string {
   return [
     `#${target.id}`,
     `label: ${target.label}`,
     `hint: ${target.hint}`,
-    ...target.files.map((f) => `--- ${f.name} (${f.language})\n${f.content}`),
+    ...target.files.map(flattenFile),
   ].join('\n')
 }
 
@@ -130,6 +174,14 @@ describe('export parity: `added` never reaches an export target', () => {
           expect(flatten(dated[i]), `target "${plain[i].id}" differs`).toBe(flatten(plain[i]))
         }
 
+        // The README ships in every download beside the target files, and it
+        // quotes each target's hint and file names - so it is both a surface of
+        // its own and a second reading of theirs. Compared as a file, not merely
+        // scanned as text.
+        expect(flattenFile(readmeFor({ ...spec, added }, props)), 'README differs').toBe(
+          flattenFile(readmeFor(spec, props)),
+        )
+
         // `config` serializes props and tokens rather than markup, so it is the
         // one target a leak could reach without touching a template. Pin it on
         // its own, parsed, so a stray key fails loudly instead of blending in.
@@ -143,10 +195,9 @@ describe('export parity: `added` never reaches an export target', () => {
     )
 
     it.each(SUBJECTS.map((s) => [s.id, s] as const))(
-      'ships no badge or freshness marker anywhere in %s output',
+      'ships no badge or freshness marker anywhere in the %s bundle',
       (_id, spec) => {
-        const corpus = corpusOf({ ...spec, added }, defaultProps(spec))
-        expect(findLeaks(corpus)).toEqual([])
+        expect(leaksIn(bundleSurfaces({ ...spec, added }, defaultProps(spec)))).toEqual([])
       },
     )
   })
@@ -183,6 +234,86 @@ describe('export parity: `added` never reaches an export target', () => {
   })
 })
 
+/**
+ * Fault injection. The suite above passes today because nothing leaks; it would
+ * also pass if the comparison had quietly stopped looking. These plant a leak in
+ * each place a target can carry one and require the guard to react.
+ */
+describe('the parity comparison itself', () => {
+  const props = defaultProps(SYNTHETIC)
+
+  /**
+   * Ways a badge could be planted on a target. `markerVisible` records whether
+   * the narrow marker list also names it - byte identity catches every one of
+   * them regardless, which is exactly why it is layer 1.
+   */
+  const PLANTS: { where: string; markerVisible: boolean; plant: (t: ExportTarget) => ExportTarget }[] = [
+    {
+      where: 'a file body',
+      markerVisible: true,
+      plant: (t) => ({
+        ...t,
+        files: t.files.map((f, i) =>
+          i === 0 ? { ...f, content: `${f.content}<span class="card__new">New</span>\n` } : f,
+        ),
+      }),
+    },
+    {
+      where: 'a file name',
+      markerVisible: true,
+      plant: (t) => ({
+        ...t,
+        files: t.files.map((f, i) => (i === 0 ? { ...f, name: `card__new.${f.name}` } : f)),
+      }),
+    },
+    {
+      where: 'a target hint',
+      markerVisible: true,
+      plant: (t) => ({ ...t, hint: `${t.hint} Added to the catalog recently.` }),
+    },
+    {
+      where: 'an extra shipped file',
+      markerVisible: true,
+      plant: (t) => ({
+        ...t,
+        files: [...t.files, { name: 'badge.css', language: 'css', content: '.card__new { display: inline; }' }],
+      }),
+    },
+    {
+      where: 'a target label',
+      markerVisible: false,
+      plant: (t) => ({ ...t, label: `${t.label} · New` }),
+    },
+  ]
+
+  describe.each(PLANTS.map((p) => [p.where, p] as const))('a badge planted in %s', (_where, { plant, markerVisible }) => {
+    it('makes the byte-identity comparison fail on every target', () => {
+      const clean = buildTargets(SYNTHETIC, props)
+      expect(clean.length).toBe(ALL_TARGET_IDS.length)
+
+      for (const target of clean) {
+        expect(flatten(plant(target)), `target "${target.id}" compared equal despite a planted badge`)
+          .not.toBe(flatten(target))
+      }
+    })
+
+    it(`is ${markerVisible ? '' : 'not '}named by the marker scan`, () => {
+      const clean = buildTargets(SYNTHETIC, props)
+      const found = clean.flatMap((t) => leaksIn(targetSurfaces(plant(t))))
+
+      // The label plant is the honest limit of layer 2: a bare "New" cannot be a
+      // marker without false-firing on widget names, so only byte identity sees
+      // it. Pinned here so the division of labour stays deliberate.
+      if (markerVisible) expect(found.length).toBeGreaterThan(0)
+      else expect(found).toEqual([])
+    })
+  })
+
+  it('reports a clean bundle as clean, so the plants above mean something', () => {
+    expect(leaksIn(bundleSurfaces(SYNTHETIC, props))).toEqual([])
+  })
+})
+
 describe('the leak scanner itself', () => {
   // A guard that cannot fail is not a guard. These prove the scanner reacts to
   // the exact shapes a real leak would take.
@@ -191,11 +322,24 @@ describe('the leak scanner itself', () => {
     ['the field name in a config blob', '{\n  "widget": "clock",\n  "added": "2026-08-20"\n}'],
     ['a JSX badge on an export template', '<span className="card__new">New</span>'],
     ['an announced badge label', '<span aria-label="New">*</span>'],
+    ['a badge stylesheet shipped as a file name', 'card__new.css'],
   ])('detects %s', (_label, leaked) => {
     expect(findLeaks(leaked).length).toBeGreaterThan(0)
   })
 
   it('passes clean export text that merely constructs objects', () => {
     expect(findLeaks("var d = new Date(); root.dispatchEvent(new CustomEvent('wg:change'));")).toEqual([])
+  })
+
+  it('names where a leak sits, not just that one exists', () => {
+    const leaked: ExportTarget = {
+      id: 'html',
+      label: 'HTML',
+      hint: 'One self contained file.',
+      files: [{ name: 'x.html', language: 'html', content: '<span class="card__new">New</span>' }],
+    }
+    expect(leaksIn(targetSurfaces(leaked))).toContain(
+      'html file "x.html": the gallery badge class `card__new`',
+    )
   })
 })
