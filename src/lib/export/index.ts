@@ -270,8 +270,12 @@ function webComponentTarget(spec: WidgetSpec, props: Props): ExportTarget {
     "    const shadow = this.attachShadow({ mode: 'open' })",
     "    const style = document.createElement('style')",
     '    style.textContent = CSS',
-    '    shadow.append(style)',
-    "    shadow.insertAdjacentHTML('beforeend', MARKUP)",
+    // `insertAdjacentHTML` lives on Element; a ShadowRoot is a DocumentFragment
+    // and does not have it. A template parses the markup once and hands over a
+    // fragment, which keeps the stylesheet first in the shadow tree.
+    "    const template = document.createElement('template')",
+    '    template.innerHTML = MARKUP',
+    '    shadow.append(style, template.content)',
     body && `    this.#dispose = init(shadow.querySelector('.${cls}'))`,
     '  }',
     '',

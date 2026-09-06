@@ -14,6 +14,11 @@
  *      through its public hooks (`stage`, `readTimer`), then drive the shipped
  *      1s interval to a phase boundary (`advanceToBoundary`).
  *
+ * Two targets need more than a transform. The Web Component ships a module a
+ * user feeds to their own bundler, so `bundleFile` runs the real thing; the
+ * HTML target ships a whole document whose `<script>` only runs if something
+ * parses and executes it, so `openHtmlExport` does that in a live window.
+ *
  * Nothing here re-implements widget behaviour. Every helper reads the same
  * `data-*` hooks and state classes the widget publishes, so a test written on
  * top of this harness fails when the export breaks, not when it is refactored.
@@ -24,11 +29,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
-import { transformSync } from 'esbuild'
+import { buildSync, transformSync } from 'esbuild'
 import type { Loader } from 'esbuild'
+import { Window } from 'happy-dom'
 import { vi } from 'vitest'
 import { buildTargets } from '../lib/export'
-import { normalizeProps } from '../lib/types'
+import { normalizeProps, rootClass } from '../lib/types'
 import type { Props, WidgetSpec } from '../lib/types'
 import { getWidget } from '../widgets'
 
@@ -155,6 +161,29 @@ export function compileSource(source: string, options: CompileOptions = {}): str
   }).code
 }
 
+/**
+ * Bundle an emitted file from its entry point, the way a user's build does.
+ *
+ * `compileFile` only strips syntax off one file. A bundle resolves the entry,
+ * walks whatever it imports and emits a single module — which is what a Web
+ * Component export actually goes through before it reaches a page, and the
+ * only way to catch an export that transforms cleanly but cannot be built.
+ */
+export function bundleFile(path: string, options: { format?: 'cjs' | 'esm' } = {}): string {
+  const result = buildSync({
+    entryPoints: [path],
+    bundle: true,
+    write: false,
+    format: options.format ?? 'cjs',
+    target: 'es2022',
+    platform: 'browser',
+    logLevel: 'silent',
+  })
+  const [out] = result.outputFiles
+  if (!out) throw new Error(`esbuild produced no bundle for '${path}'`)
+  return out.text
+}
+
 /** Read a file emitted by `emitExport` and compile it. */
 export function compileFile(path: string, options: CompileOptions = {}): string {
   return compileSource(readFileSync(path, 'utf8'), { sourcefile: path, ...options })
@@ -199,6 +228,58 @@ export function stage(): HTMLElement {
   const host = document.createElement('div')
   document.body.appendChild(host)
   return host
+}
+
+/**
+ * A parsed HTML export, live in its own window.
+ *
+ * The HTML target is the only download that is a whole page: markup, styles and
+ * an inline `<script>` that starts the widget. Reading the file as a string
+ * proves none of that, so this opens it the way a browser does.
+ */
+export interface HtmlPage {
+  /** The window the document was parsed in. Its own realm, own document. */
+  window: Window
+  /** The parsed document. Pass it anywhere the harness takes a `ParentNode`. */
+  document: ParentNode
+  /** The widget root the inline script was handed, i.e. `.wg-<id>`. */
+  root: HTMLElement
+}
+
+/**
+ * The globals the exported scripts reach for. Copied from the test realm into
+ * the page's realm, so the widget runs on the same clock `vi.useFakeTimers()`
+ * controls; happy-dom's own timers are real and could not be advanced.
+ */
+const CLOCK_GLOBALS = ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date'] as const
+
+/**
+ * Parse and run the HTML target of an emitted export.
+ *
+ * Script evaluation is on, so the shipped `<script>` executes during parsing
+ * exactly as it would on open — if the document does not start the widget, the
+ * readout stays frozen and the test says so.
+ */
+export function openHtmlExport(bundle: EmittedExport): HtmlPage {
+  const win = new Window({
+    settings: {
+      enableJavaScriptEvaluation: true,
+      // The warning is about running untrusted pages; this page is one we built.
+      suppressInsecureJavaScriptEnvironmentWarning: true,
+    },
+  })
+  const realm = win as unknown as Record<string, unknown>
+  for (const name of CLOCK_GLOBALS) realm[name] = (globalThis as Record<string, unknown>)[name]
+
+  win.document.write(bundle.target('html').source())
+
+  const selector = `.${rootClass(bundle.spec)}`
+  // happy-dom types its nodes against its own DOM classes. Structurally these
+  // are the DOM the harness reads, so the cast is a naming detail, not a lie.
+  const document = win.document as unknown as ParentNode
+  const root = document.querySelector(selector) as HTMLElement | null
+  if (!root) throw new Error(`html export did not render its root '${selector}'`)
+  return { window: win, document, root }
 }
 
 /** Detach everything `stage()` put in the document. */
