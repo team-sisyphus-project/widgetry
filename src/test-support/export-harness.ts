@@ -14,10 +14,14 @@
  *      through its public hooks (`stage`, `readTimer`), then drive the shipped
  *      1s interval to a phase boundary (`advanceToBoundary`).
  *
- * Two targets need more than a transform. The Web Component ships a module a
+ * Four targets need more than a transform. The Web Component ships a module a
  * user feeds to their own bundler, so `bundleFile` runs the real thing; the
  * HTML target ships a whole document whose `<script>` only runs if something
- * parses and executes it, so `openHtmlExport` does that in a live window.
+ * parses and executes it, so `openHtmlExport` does that in a live window; and
+ * the Vue and Svelte targets ship a language no runtime reads, so
+ * `compileVueFile` and `compileSvelteFile` put them through the same compilers
+ * a user's build would (`vueRuntime`/`svelteRuntime` link the result against a
+ * browser runtime, which node's own resolution would not pick).
  *
  * Nothing here re-implements widget behaviour. Every helper reads the same
  * `data-*` hooks and state classes the widget publishes, so a test written on
@@ -28,7 +32,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { extname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
 import { buildSync, transformSync } from 'esbuild'
 import type { Loader } from 'esbuild'
 import { Window } from 'happy-dom'
@@ -397,4 +401,146 @@ export function advanceToBoundary(minutes: number): void {
 /** One second short of the same boundary — the phase must still be running. */
 export function advanceToJustBeforeBoundary(minutes: number): void {
   vi.advanceTimersByTime(minutes * MINUTE - SECOND)
+}
+
+/* ---------------------------------------------------- framework compile ---- */
+
+/**
+ * A single file component after its framework's compiler has had it.
+ *
+ * The Vue and Svelte targets ship source no runtime understands: an SFC and a
+ * `.svelte` file are both compiled by the user's build before a browser ever
+ * sees them. Reading those files as strings proves nothing about that step, so
+ * these builds run the real compilers — the same ones `@vitejs/plugin-vue` and
+ * `vite-plugin-svelte` call.
+ */
+export interface FrameworkBuild {
+  /** The component value the framework mounts: `createApp(c)` / `mount(c, …)`. */
+  component: unknown
+  /** The stylesheet the compiler emitted, as the build would inject it. */
+  css: string
+  /**
+   * Every diagnostic the compiler produced — errors, warnings and tips alike.
+   * A clean compile leaves this empty, which is the assertion worth making:
+   * Svelte's unused-selector pruning, for one, is only ever a warning and yet
+   * it deletes rules from the shipped stylesheet.
+   */
+  problems: string[]
+  /** The JavaScript the compiler produced, before it was evaluated. */
+  code: string
+}
+
+/**
+ * The modules a compiled component imports, resolved for the browser.
+ *
+ * `evaluateModule` otherwise falls back to node's own resolution, which reads
+ * the *node* condition of a package's exports map. For Svelte that is the
+ * server build: its `mount` refuses to run and its `onMount` never fires, so a
+ * component linked against it renders nothing and never starts its timer.
+ */
+export type FrameworkRuntime = ModuleStubs
+
+/** Vue's runtime. Its node entry is the full runtime, so nothing to redirect. */
+export function vueRuntime(): FrameworkRuntime {
+  return { vue: nodeRequire('vue') }
+}
+
+/**
+ * Svelte's *client* runtime, plus the internals a compiled component imports.
+ *
+ * Svelte publishes its browser build only under the `browser` export condition,
+ * which node never picks. The entry is loaded by path instead; `internal/client`
+ * resolves to the same file either way, so the component, the client entry and
+ * the test all share one copy — and one copy is the requirement, because that
+ * module holds the component state `mount` and `onMount` both write to.
+ */
+export function svelteRuntime(): FrameworkRuntime {
+  const root = dirname(nodeRequire.resolve('svelte/package.json'))
+  return {
+    svelte: nodeRequire(join(root, 'src/index-client.js')),
+    'svelte/internal/client': nodeRequire('svelte/internal/client'),
+    'svelte/internal/disclose-version': nodeRequire('svelte/internal/disclose-version'),
+    'svelte/internal/flags/legacy': nodeRequire('svelte/internal/flags/legacy'),
+  }
+}
+
+let sfcSeq = 0
+
+/** Compile a Vue single file component the way `@vitejs/plugin-vue` does. */
+export function compileVueSource(source: string, filename = 'Component.vue', runtime: FrameworkRuntime = {}): FrameworkBuild {
+  const sfc = nodeRequire('vue/compiler-sfc') as typeof import('vue/compiler-sfc')
+  const problems: string[] = []
+  const { descriptor, errors } = sfc.parse(source, { filename })
+  for (const error of errors) problems.push(`parse: ${error.message}`)
+
+  // Scope id for `compileScript`/`compileStyle`. Unique per compile so two
+  // builds of the same file in one test cannot share a cache entry.
+  const id = `wg${++sfcSeq}`
+
+  let code: string
+  if (descriptor.script || descriptor.scriptSetup) {
+    // `inlineTemplate` puts the render function inside the component's setup,
+    // which is what a production build does and what makes a template ref
+    // resolve against the `<script setup>` binding of the same name.
+    const script = sfc.compileScript(descriptor, { id, inlineTemplate: true })
+    for (const warning of script.warnings ?? []) problems.push(`script: ${warning}`)
+    code = script.content
+  } else {
+    // A widget with no `script` emits an SFC of template and style only.
+    const template = sfc.compileTemplate({
+      id,
+      filename,
+      source: descriptor.template?.content ?? '',
+      isProd: true,
+    })
+    for (const error of template.errors) {
+      problems.push(`template: ${typeof error === 'string' ? error : error.message}`)
+    }
+    for (const tip of template.tips) problems.push(`template: ${tip}`)
+    code = `${template.code}\nexport default { render }\n`
+  }
+
+  const css = descriptor.styles
+    .map((style) => {
+      const compiled = sfc.compileStyle({ id, filename, source: style.content, scoped: style.scoped })
+      for (const error of compiled.errors) problems.push(`style: ${error.message}`)
+      return compiled.code
+    })
+    .join('\n')
+
+  const js = compileSource(code, { loader: 'ts', sourcefile: filename })
+  return { component: evaluateModule(js, runtime).default, css, problems, code: js }
+}
+
+/** Read an emitted `.vue` file and compile it. */
+export function compileVueFile(path: string, runtime: FrameworkRuntime = {}): FrameworkBuild {
+  return compileVueSource(readFileSync(path, 'utf8'), path, runtime)
+}
+
+/** Compile a Svelte component the way `vite-plugin-svelte` does. */
+export function compileSvelteSource(
+  source: string,
+  filename = 'Component.svelte',
+  runtime: FrameworkRuntime = {},
+): FrameworkBuild {
+  const { compile } = nodeRequire('svelte/compiler') as typeof import('svelte/compiler')
+  const problems: string[] = []
+  const out = compile(source, { filename, generate: 'client', dev: false })
+  for (const warning of out.warnings) problems.push(`${warning.code}: ${warning.message}`)
+
+  const js = compileSource(out.js.code, { loader: 'js', sourcefile: filename })
+  return { component: evaluateModule(js, runtime).default, css: out.css?.code ?? '', problems, code: js }
+}
+
+/** Read an emitted `.svelte` file and compile it. */
+export function compileSvelteFile(path: string, runtime: FrameworkRuntime = {}): FrameworkBuild {
+  return compileSvelteSource(readFileSync(path, 'utf8'), path, runtime)
+}
+
+/** Put a compiled component's stylesheet in the page, as its build would. */
+export function applyCss(css: string): HTMLStyleElement {
+  const style = document.createElement('style')
+  style.textContent = css
+  document.head.append(style)
+  return style
 }

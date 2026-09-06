@@ -232,7 +232,15 @@ function svelteTarget(spec: WidgetSpec, props: Props): ExportTarget {
     '</div>',
     '',
     '<style>',
-    spec.css(props),
+    // Svelte scopes a component stylesheet by default: it appends a hash class to
+    // every selector and *deletes* the ones it cannot find in the static markup.
+    // Every state rule here is added at runtime by `init` (`is-break`, `is-ready`,
+    // `is-done`, `is-signal`), so plain scoping would compile them away and warn
+    // about each one. A `:global` block ships the stylesheet exactly as authored,
+    // which is also what keeps the tokens overridable from outside the component.
+    ':global {',
+    indent(spec.css(props), '  '),
+    '}',
     '</style>',
   )
   return {
