@@ -79,3 +79,9 @@ open ./.emitted/<id>/html/<id>.html
 
 Then confirm the React output compiles under strict TypeScript in a scratch
 project. Both checks catch the failures that a visual pass does not.
+
+The browser suite (`npm run test:e2e`) is not part of this loop. It renders the
+gallery against a pinned fixture catalog, on purpose, so that adding a widget
+cannot move what it measures — a new spec needs nothing added there. Run it when
+you change the gallery card itself, and see the repository README for what it
+pins and why.

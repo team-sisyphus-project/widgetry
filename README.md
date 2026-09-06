@@ -99,6 +99,39 @@ npx esbuild scripts/emit.ts --bundle --format=esm --platform=node --outfile=.emi
 node .emit.mjs ./.emitted
 ```
 
+## End to end checks
+
+`npm run test` (vitest) proves the pure parts: the spec contract, the seven
+export generators, the freshness rule behind the gallery's New badge. It cannot
+prove what a real engine lays out or what a screen reader is handed, because
+jsdom has neither a layout pass nor an accessibility tree. That is what the
+browser suite is for.
+
+```bash
+npx playwright install --with-deps chromium   # once per machine
+npm run test:e2e
+```
+
+`test:e2e` builds the app with `vite.e2e.config.ts`, serves it with `vite
+preview` on port 4183 and drives it with chromium. There is no server to start
+by hand, and the two suites do not overlap: vitest excludes `e2e/`, playwright
+looks nowhere else.
+
+Two inputs are pinned so that a green run today still means something next
+month:
+
+| Pinned | Why |
+| --- | --- |
+| The clock, to a fixed instant | The New badge is decided by a freshness window measured from now, so against the wall clock the tests would quietly expire on their own |
+| The catalog, to three fixture widgets | The shipped widgets carry no add dates, and the list grows with every widget added, so real cards are a baseline that moves |
+
+The catalog swap lives in the E2E build config, never in `src/`, so `npm run
+build` always ships the real catalog. If the swap ever stops applying,
+`build:e2e` fails loudly rather than testing the wrong widgets.
+
+[e2e/README.md](e2e/README.md) carries the rest: what each fixture pins, and
+what to do when chromium refuses to start.
+
 ## Adding a widget
 
 See [docs/AUTHORING.md](docs/AUTHORING.md). A widget is one file, one exported
