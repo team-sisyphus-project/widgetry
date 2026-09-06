@@ -366,6 +366,15 @@ function qrDataCodewords(ver: number): number {
   return Math.floor(qrRawDataModules(ver) / 8) - QR_ECC_PER_BLOCK_M[ver] * QR_NUM_BLOCKS_M[ver]
 }
 
+/**
+ * Largest UTF-8 payload, in bytes, a byte-mode level-M symbol can carry: the
+ * version-40 data capacity minus the 4-bit mode indicator and the 16-bit
+ * character count. Past this the encoder throws and the card shows its
+ * unavailable code tile, so this is the one number that decides which of the
+ * two states a `qrTarget` lands in.
+ */
+export const QR_MAX_BYTES = Math.floor((qrDataCodewords(40) * 8 - 4 - 16) / 8)
+
 /** Centre coordinates of the alignment patterns for the given version. */
 function qrAlignPositions(ver: number): number[] {
   if (ver === 1) return []
@@ -391,7 +400,10 @@ export function qrMatrix(text: string): boolean[][] {
     const ccBits = version <= 9 ? 8 : 16
     if (4 + ccBits + bytes.length * 8 <= capacityBits) break
   }
-  if (version > 40) throw new Error('qr: data too long to encode')
+  if (version > 40)
+    throw new Error(
+      `qr: data too long to encode (${bytes.length} bytes, max ${QR_MAX_BYTES})`,
+    )
 
   // ---- bit stream: mode + length + payload + terminator + padding ----
   const bb: number[] = []
@@ -636,10 +648,19 @@ export function qrSvg(text: string): string {
   try {
     matrix = qrMatrix(text)
   } catch {
-    // Beyond QR capacity: render a blank paper tile rather than break the studio.
+    // Beyond QR capacity (see QR_MAX_BYTES). The tile keeps its square and its
+    // place so the card does not reflow, but it visibly stops claiming to be
+    // scannable: a dashed edge (nothing is printed here) around a muted
+    // slashed circle (this code is unavailable), with the words in the
+    // accessible name because the tile is far too small to set them in type.
     return dedent(`
-      <svg class="wg-contact-card__qr-svg" viewBox="0 0 29 29" shape-rendering="crispEdges" role="img" aria-label="QR code unavailable">
+      <svg class="wg-contact-card__qr-svg wg-contact-card__qr-svg--void" viewBox="0 0 29 29" role="img" aria-label="QR code unavailable: target too long">
         <rect class="wg-contact-card__qr-paper" width="29" height="29"></rect>
+        <g class="wg-contact-card__qr-void">
+          <rect class="wg-contact-card__qr-void-edge" x="2.6" y="2.6" width="23.8" height="23.8" rx="3.4"></rect>
+          <circle cx="14.5" cy="14.5" r="6.4"></circle>
+          <path d="M9.97 19.03 19.03 9.97"></path>
+        </g>
       </svg>
     `)
   }
@@ -744,5 +765,13 @@ export const contactCard: WidgetSpec = {
     .wg-contact-card__qr-svg { display: block; width: 100%; height: 100%; }
     .wg-contact-card__qr-paper { fill: #ffffff; }
     .wg-contact-card__qr-ink { fill: #0a0a0a; }
+    .wg-contact-card__qr-void {
+      fill: none;
+      stroke: #0a0a0a;
+      stroke-opacity: .45;
+      stroke-width: 1.3;
+      stroke-linecap: round;
+    }
+    .wg-contact-card__qr-void-edge { stroke-dasharray: 3 2.6; }
   `),
 }
