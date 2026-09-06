@@ -57,6 +57,14 @@ export interface WidgetSpec {
   script?: (p: Props) => string
   /** true when the widget responds to clicks, drags or keyboard */
   interactive?: boolean
+  /**
+   * ISO date (or date-time) marking when this widget entered the catalog.
+   * Gallery-only: read by the gallery's own rendering path to decide whether a
+   * card shows the "New" badge. It is never passed to `vars`/`markup`/`css`/
+   * `script` and never reaches exported output. Optional, so a widget without
+   * it is simply never new - no backfill is required.
+   */
+  added?: string
 }
 
 export const CATEGORY_LABEL: Record<Category, string> = {
@@ -75,6 +83,44 @@ export function defaultProps(spec: WidgetSpec): Props {
 
 export function rootClass(spec: WidgetSpec): string {
   return `wg-${spec.id}`
+}
+
+/** Days a widget stays "new" after its `added` date, unless a caller overrides it. */
+export const DEFAULT_FRESHNESS_WINDOW_DAYS = 30
+
+const MS_PER_DAY = 86_400_000
+
+/**
+ * Is this widget new as of `now`?
+ *
+ * Gallery-only rule, defined once so no caller re-derives it. `now` is an
+ * explicit argument rather than an internal clock read, so callers and tests
+ * pin the comparison instead of depending on wall-clock time.
+ *
+ * The window is the closed interval `[added, added + windowDays]`:
+ * - `added` set and inside the window (including exactly `windowDays` later) -> true
+ * - `added` set but older than the window -> false
+ * - `added` set to a moment still in the future relative to `now` -> false,
+ *   the window has not opened yet
+ * - `added` absent, not a string, or unparseable -> false
+ *
+ * Never throws: every unusable input resolves to false, so a bad `added` value
+ * can only ever hide the badge, never break the gallery.
+ */
+export function isNew(
+  spec: WidgetSpec,
+  now: Date,
+  windowDays: number = DEFAULT_FRESHNESS_WINDOW_DAYS,
+): boolean {
+  if (typeof spec?.added !== 'string') return false
+  if (!Number.isFinite(windowDays) || windowDays < 0) return false
+
+  const added = Date.parse(spec.added)
+  const current = now instanceof Date ? now.getTime() : NaN
+  if (!Number.isFinite(added) || !Number.isFinite(current)) return false
+
+  const elapsed = current - added
+  return elapsed >= 0 && elapsed <= windowDays * MS_PER_DAY
 }
 
 /** Merge user props over defaults, dropping keys the spec no longer declares. */
