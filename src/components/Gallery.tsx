@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Category, WidgetSpec } from '../lib/types'
-import { CATEGORY_LABEL, defaultProps } from '../lib/types'
+import { CATEGORY_LABEL, defaultProps, isNew } from '../lib/types'
 import { WIDGETS } from '../widgets'
 import { Live } from './Live'
 
@@ -20,6 +20,10 @@ export function Gallery({ onOpen, onHome }: { onOpen: (spec: WidgetSpec) => void
         w.tags.some((t) => t.includes(q)),
     )
   }, [filter, query])
+
+  // One clock read per render, shared by every card, so no two cards in the same
+  // grid can disagree about where the freshness window falls.
+  const now = useMemo(() => new Date(), [])
 
   return (
     <>
@@ -65,6 +69,7 @@ export function Gallery({ onOpen, onHome }: { onOpen: (spec: WidgetSpec) => void
             <div className="card__meta">
               <div>
                 <strong>{spec.name}</strong>
+                {isNew(spec, now) && <span className="card__new">New</span>}
                 <span>{spec.blurb}</span>
               </div>
               <button className="btn btn--small" onClick={() => onOpen(spec)}>

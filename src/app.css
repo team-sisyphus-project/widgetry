@@ -168,6 +168,26 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .card__meta span { font-size: 12px; line-height: 1.45; color: var(--muted); }
 .card__meta .btn { margin-left: auto; flex: 0 0 auto; }
 
+/*
+ * Gallery-only freshness pill. Speaks the same pill language as the studio's
+ * `.badge` (999px, accent tint) but is a separate rule on purpose: the studio
+ * owns `.badge`, and a restyle there must not repaint the gallery grid.
+ * `align-self` keeps it hugging its text inside the column-flex meta block, so
+ * a card without a badge keeps exactly the layout it had before.
+ * Selector is `.card__meta .card__new` to outrank `.card__meta span`.
+ */
+.card__meta .card__new {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: #c3b9ff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  line-height: 1.5;
+}
+
 .empty { text-align: center; color: var(--muted); padding: 40px 0 80px; }
 
 .foot__home {
