@@ -632,4 +632,118 @@ export const focusTimer: WidgetSpec = {
       .wg-focus-timer__mark { transition: none; }
     }
   `),
+  script: (p) => {
+    const work = Math.max(1, Math.round(Number(p.workMinutes))) * 60000
+    const rest = Math.max(1, Math.round(Number(p.breakMinutes))) * 60000
+    const rounds = Math.max(1, Math.round(Number(p.rounds)))
+    return dedent(`
+      var WORK = ${work}, BREAK = ${rest}, ROUNDS = ${rounds};
+      var AUTO = ${p.autoStart ? 'true' : 'false'};
+      // Phases are addressed by one index instead of a queue: even is a focus
+      // round, odd is the break that follows it. The trailing break is dropped,
+      // so LAST is the final focus round and anything past it is the terminal
+      // done state.
+      var LAST = ROUNDS * 2 - 2;
+      var SIGNAL_MS = 1600;
+
+      var card = root.querySelector('[data-card]');
+      var phaseEl = root.querySelector('[data-phase]');
+      var timeEl = root.querySelector('[data-time]');
+      var roundEl = root.querySelector('[data-round]');
+      var trackEl = root.querySelector('[data-track]');
+      var marks = root.querySelectorAll('[data-mark]');
+      var advance = root.querySelector('[data-advance]');
+
+      var at = 0;          // index into the phase sequence
+      var deadline = 0;    // absolute ms the running phase ends at
+      var holding = false; // parked on a handover, waiting for the advance click
+      var timer = 0, signal = 0;
+
+      function isWork(i) { return i % 2 === 0; }
+      function roundOf(i) { return Math.floor(i / 2) + 1; }
+      function lengthOf(i) { return isWork(i) ? WORK : BREAK; }
+      /** Focus rounds finished so far; a break counts the round it follows. */
+      function finished() {
+        if (at > LAST) return ROUNDS;
+        return isWork(at) ? roundOf(at) - 1 : roundOf(at);
+      }
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+      function clock(ms) {
+        var total = Math.max(0, Math.floor(ms / 1000));
+        return pad2(Math.floor(total / 60)) + ':' + pad2(total % 60);
+      }
+
+      function render(ms) {
+        var over = at > LAST;
+        var label = over ? 'DONE' : isWork(at) ? 'FOCUS' : 'BREAK';
+        phaseEl.textContent = holding ? label + ' \\u00b7 READY' : label;
+        timeEl.textContent = clock(ms);
+        roundEl.textContent = (over ? ROUNDS : roundOf(at)) + ' / ' + ROUNDS;
+        var done = finished();
+        for (var i = 0; i < marks.length; i++) marks[i].classList.toggle('is-done', i < done);
+        if (trackEl) {
+          trackEl.setAttribute('aria-label', done + ' of ' + ROUNDS + ' focus rounds complete');
+        }
+        card.classList.toggle('is-work', !over && isWork(at));
+        card.classList.toggle('is-break', !over && !isWork(at));
+        card.classList.toggle('is-ready', holding);
+        card.classList.toggle('is-done', over);
+      }
+
+      // One-shot ring pulse. Removing the class and reading back a layout value
+      // restarts the animation, so a second handover re-fires it.
+      function pulse() {
+        card.classList.remove('is-signal');
+        void card.offsetWidth;
+        card.classList.add('is-signal');
+        clearTimeout(signal);
+        signal = setTimeout(function () { card.classList.remove('is-signal'); }, SIGNAL_MS);
+      }
+
+      function begin(from) {
+        holding = false;
+        deadline = from + lengthOf(at);
+        render(deadline - Date.now());
+      }
+
+      function finish() {
+        clearInterval(timer);
+        timer = 0;
+        holding = false;
+        pulse();
+        render(0);
+      }
+
+      function tick() {
+        if (holding) return;
+        var ms = deadline - Date.now();
+        // Anchored on the deadline, not on an accumulated -1s, so interval
+        // jitter moves when a frame is drawn and never what it says. The loop
+        // also catches up when several phases elapsed while throttled.
+        while (ms <= 0) {
+          at++;
+          if (at > LAST) { finish(); return; }
+          pulse();
+          if (!AUTO) { holding = true; render(lengthOf(at)); return; }
+          deadline += lengthOf(at);
+          ms = deadline - Date.now();
+        }
+        render(ms);
+      }
+
+      function onAdvance() {
+        if (holding) begin(Date.now());
+      }
+
+      // autoStart governs handover only: round one runs on mount either way.
+      begin(Date.now());
+      if (advance) advance.addEventListener('click', onAdvance);
+      timer = setInterval(tick, 1000);
+      return function () {
+        clearInterval(timer);
+        clearTimeout(signal);
+        if (advance) advance.removeEventListener('click', onAdvance);
+      };
+    `)
+  },
 }
