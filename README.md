@@ -87,7 +87,38 @@ Other scripts:
 ```bash
 npm run build      # typecheck and bundle
 npm run typecheck  # types only
+npm test           # unit tests and the server smoke test
 ```
+
+### From a clean checkout
+
+Three commands take a fresh clone to a served build:
+
+```bash
+npm install
+npm run build      # typecheck, then bundle into dist/
+npm start          # serve dist/ over plain HTTP
+```
+
+`npm start` runs `server.mjs`, a dependency-free Node process that serves the
+build, falls back to `index.html` for client routes, and 404s a missing asset
+rather than hiding it behind that fallback. It binds `PORT`, falling back to
+`5178` when nothing sets it:
+
+```bash
+PORT=8080 npm start   # http://localhost:8080
+```
+
+It speaks plain HTTP and does not redirect to https, so a TLS terminator can sit
+in front of it untouched.
+
+There is nothing else to stand up. No database, no cache, no migrations, no seed
+data, no accounts, no login — every widget runs in the browser, and the server
+only hands out files. A green field is the only state this app has.
+
+Configuration is environment only: `PORT`, `HOST` (default `0.0.0.0`), and
+`STATIC_ROOT` if you want to serve a directory other than `dist/`. There are no
+secrets in the repository and none to supply.
 
 ## Verifying the exports
 

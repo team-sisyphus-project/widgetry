@@ -1,0 +1,14 @@
+# Local preview contract for Widgetry.
+#
+# Auto-detection sees a Vite project and would serve `dist/` as a static
+# bundle. That is not how this app ships: `npm start` runs `server.mjs`, a
+# dependency-free Node process that binds $PORT, applies the SPA fallback and
+# sets the cache headers. Declaring the model here removes the ambiguity.
+model = "server"
+
+[build]
+command = "npm run build"
+
+[serve]
+command = "node server.mjs"
+port_env = "PORT"
