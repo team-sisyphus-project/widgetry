@@ -58,7 +58,21 @@ export interface WidgetSpec {
   /** true when the widget responds to clicks, drags or keyboard */
   interactive?: boolean
   /**
-   * ISO date (or date-time) marking when this widget entered the catalog.
+   * Calendar date this widget entered the catalog, written as `YYYY-MM-DD`.
+   *
+   * The format is required, not a suggestion. `Date.parse` reads a date-only
+   * string as UTC midnight but an offset-less date-time (`2026-02-20T00:00:00`)
+   * as *local* midnight - up to a full day apart. The same catalog value could
+   * then sit inside the freshness window in Auckland and outside it in Honolulu,
+   * making the badge a property of the visitor's clock rather than of the
+   * catalog. One pinned format removes the choice.
+   *
+   * Authors write `YYYY-MM-DD`. A date-time is accepted only when it names an
+   * absolute instant by carrying an explicit offset (`...Z` or `...+09:00`).
+   * An offset-less date-time is rejected outright rather than guessed at:
+   * `isNew` reads it as false in every timezone, so a mis-typed value hides the
+   * badge everywhere instead of showing it in half the world.
+   *
    * Gallery-only: read by the gallery's own rendering path to decide whether a
    * card shows the "New" badge. It is never passed to `vars`/`markup`/`css`/
    * `script` and never reaches exported output. Optional, so a widget without
@@ -91,6 +105,21 @@ export const DEFAULT_FRESHNESS_WINDOW_DAYS = 30
 const MS_PER_DAY = 86_400_000
 
 /**
+ * The `added` values that name an absolute instant, independent of the host
+ * timezone - the format pinned in `WidgetSpec.added`.
+ *
+ * - `2026-02-20`                  the canonical form, UTC midnight
+ * - `2026-02-20T09:00:00Z`        explicit UTC
+ * - `2026-02-20T09:00:00+09:00`   explicit offset
+ *
+ * Anything else - notably `2026-02-20T09:00:00`, which `Date.parse` resolves
+ * against the *local* zone - is not an instant and does not get to decide a
+ * badge. Shape only; `Date.parse` still rejects impossible dates like
+ * `2026-13-45`.
+ */
+const ABSOLUTE_INSTANT = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/
+
+/**
  * Is this widget new as of `now`?
  *
  * Gallery-only rule, defined once so no caller re-derives it. `now` is an
@@ -102,7 +131,8 @@ const MS_PER_DAY = 86_400_000
  * - `added` set but older than the window -> false
  * - `added` set to a moment still in the future relative to `now` -> false,
  *   the window has not opened yet
- * - `added` absent, not a string, or unparseable -> false
+ * - `added` absent, not a string, or not an unambiguous instant in the format
+ *   pinned on `WidgetSpec.added` -> false
  *
  * Never throws: every unusable input resolves to false, so a bad `added` value
  * can only ever hide the badge, never break the gallery.
@@ -113,6 +143,7 @@ export function isNew(
   windowDays: number = DEFAULT_FRESHNESS_WINDOW_DAYS,
 ): boolean {
   if (typeof spec?.added !== 'string') return false
+  if (!ABSOLUTE_INSTANT.test(spec.added)) return false
   if (!Number.isFinite(windowDays) || windowDays < 0) return false
 
   const added = Date.parse(spec.added)
