@@ -4,7 +4,7 @@ import { QR_MAX_BYTES } from './data'
 import { defaultProps } from '../lib/types'
 import type { Props } from '../lib/types'
 import { buildTargets } from '../lib/export'
-import type { ExportTarget } from '../lib/export'
+import type { ExportFile, ExportTarget } from '../lib/export'
 
 /*
  * M-4, whole card: the five shipped formats carry the *same card*, not just the
@@ -35,10 +35,11 @@ import type { ExportTarget } from '../lib/export'
  * reads. The reader is written here rather than borrowed from `lib/export/jsx`
  * on purpose: a parser cannot be its own witness.
  *
- * Deliberately out of scope: the design tokens on the root element (each format
- * carries them in its own syntax — inline style, a style object, a `:style`
- * bind) and whether each file is syntactically valid for its framework. Those
- * are separate checks; this one is about the values inside the card.
+ * The design tokens are not part of this comparison: they sit on the element
+ * wrapping the card, not inside it, and each format spells that element its own
+ * way. They get their own comparison in the second half of this file. Whether
+ * each file is syntactically valid for its framework is a separate check again;
+ * neither half claims it.
  */
 
 /* ------------------------------------------------------------ the reader ---- */
@@ -393,6 +394,307 @@ describe('contact-card whole-card export parity (M-4)', () => {
 
     it('reads the same card back from an undamaged export (the control)', () => {
       expect(shape(cardTree(html, 'html', 'html export'))).toEqual(shape(canonical))
+    })
+  })
+})
+
+/* ================================================================ tokens ==== */
+
+/*
+ * M-4, the tokens: the three design tokens are the *same three tokens* in all
+ * five formats, whatever syntax each one writes them in.
+ *
+ * The card comparison above deliberately stops at the card's root: the tokens
+ * do not live inside the card, they live on the element wrapping it, and every
+ * format spells that element differently. `--wg-bg`/`--wg-ink`/`--wg-accent` is
+ * the retheming contract an exported widget hands its owner — the whole promise
+ * of "restyle it from the outside without touching anything inside it" — so a
+ * token that is renamed in one format, dropped from another, or mangled by a
+ * third breaks that promise silently: the file still compiles, the card still
+ * renders, it just quietly stops answering to the token the README documents.
+ *
+ * So each format is read back through its own encoding, and all five are held
+ * against `spec.vars(props)`:
+ *
+ *   - HTML       an HTML-escaped `style="--wg-bg: …; --wg-ink: …"` attribute
+ *   - React      a `tokens` object literal, quoted keys and JSON string values
+ *   - Vue        a `:style="{ '--wg-bg': '…' }"` object binding
+ *   - Svelte     a raw inline `style="…"` string on the root element
+ *   - WebComp.   the same style attribute, inside a `String.raw` template
+ *
+ * Order is compared too, not just membership: every encoder walks
+ * `Object.entries(spec.vars(props))`, so a reordering means someone stopped
+ * walking the canonical list.
+ */
+
+/** `--wg-bg: #0a0a0a; --wg-ink: #fff` -> [['--wg-bg', '#0a0a0a'], ['--wg-ink', '#fff']] */
+function parseDeclarations(css: string, where: string): [string, string][] {
+  return css
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((decl) => {
+      const colon = decl.indexOf(':')
+      if (colon < 0) throw new Error(`declaration with no value in ${where}: ${JSON.stringify(decl)}`)
+      return [decl.slice(0, colon).trim(), decl.slice(colon + 1).trim()] as [string, string]
+    })
+}
+
+/** The widget's root element — the one the tokens are declared on. */
+const ROOT_OPEN = /<div\s+class="wg-contact-card"/g
+
+/**
+ * The root element's `style` attribute, read with the same HTML reader used
+ * above. Entities are decoded because HTML, Svelte templates and the markup a
+ * browser parses out of the Web Component's `String.raw` string all decode
+ * them; only the HTML and Web Component encoders escape on the way in, so for
+ * Svelte the decode is a no-op that would still catch a stray entity.
+ */
+function rootStyle(content: string, where: string): string {
+  ROOT_OPEN.lastIndex = 0
+  const hits = [...content.matchAll(ROOT_OPEN)]
+  if (hits.length !== 1) {
+    throw new Error(`expected exactly one root element in ${where}, found ${hits.length}`)
+  }
+  const { node } = parseElement(content, hits[0].index, 'html')
+  const style = node.kind === 'element' ? node.attrs.filter(([name]) => name === 'style') : []
+  if (style.length !== 1 || style[0][1] === null) {
+    throw new Error(`expected one style attribute on the root element in ${where}`)
+  }
+  return style[0][1]
+}
+
+/** Everything the reader did not account for. Non-empty means the format changed shape. */
+function leftover(body: string, entries: RegExp): string {
+  return body.replace(entries, '').replace(/[\s,]/g, '')
+}
+
+/**
+ * One `'--token': 'value'` pair of a JavaScript object literal, which is the
+ * shape both React's `tokens` object and Vue's `:style` binding are written in.
+ * Quote style and the trailing comma are left free: those are the formatter's
+ * business, and a test that failed when a comma moved would be reporting on
+ * something other than the token contract.
+ */
+const JS_ENTRY = /(['"])(--[\w-]+)\1\s*:\s*(['"])((?:\\.|(?!\3)[^\\])*)\3\s*,?/g
+
+/** The string a JS engine would see, whichever quote the encoder chose. */
+function jsString(quote: string, raw: string): string {
+  const doubled = quote === '"' ? raw : raw.replace(/\\'/g, "'").replace(/"/g, '\\"')
+  return JSON.parse(`"${doubled}"`) as string
+}
+
+/** Read a `{ '--token': 'value', … }` literal out of `block`'s first capture. */
+function objectTokens(content: string, block: RegExp, where: string): [string, string][] {
+  const found = block.exec(content)
+  if (!found) throw new Error(`no token object in ${where}`)
+  const entries = [...found[1].matchAll(JS_ENTRY)].map(
+    ([, , key, quote, value]) => [key, jsString(quote, value)] as [string, string],
+  )
+  const rest = leftover(found[1], JS_ENTRY)
+  if (rest) throw new Error(`unread text in the ${where} token object: ${JSON.stringify(rest)}`)
+  return entries
+}
+
+/** `export const tokens: CSSProperties = { … }` */
+const REACT_TOKENS = /export const tokens[^=]*=\s*\{([\s\S]*?)\}/
+
+/** `:style="{ … }"` on the root element. */
+const VUE_TOKENS = /:style="\{([\s\S]*?)\}"/
+
+/** Remove one whole pair from such a literal. */
+const JS_DROP = /(['"])--wg-ink\1\s*:\s*(['"])[^'"]*\2\s*,?\s*/
+
+/** The markup the Web Component injects, lifted out of its `String.raw` template. */
+const WC_MARKUP = /const MARKUP = String\.raw`((?:\\.|[^`])*)`/
+
+function webComponentMarkup(content: string): string {
+  const block = WC_MARKUP.exec(content)
+  if (!block) throw new Error('no String.raw MARKUP template in the Web Component export')
+  return block[1].replace(/\\`/g, '`')
+}
+
+function onlyFile(target: ExportTarget): ExportFile {
+  if (target.files.length !== 1) {
+    throw new Error(`expected one file in ${target.id}, found ${target.files.length}`)
+  }
+  return target.files[0]
+}
+
+function tsxFile(target: ExportTarget): ExportFile {
+  const tsx = target.files.filter((f) => f.language === 'tsx')
+  if (tsx.length !== 1) throw new Error(`expected one .tsx file in ${target.id}, found ${tsx.length}`)
+  return tsx[0]
+}
+
+interface TokenFormat {
+  id: string
+  /** The one file of this target that declares the tokens. */
+  file: (target: ExportTarget) => ExportFile
+  /** Read them back out of that file, in this format's own syntax. */
+  read: (content: string) => [string, string][]
+  /** Where the declarations sit, so injected damage lands there and not in the CSS. */
+  site: RegExp
+  /** How one whole declaration is removed, in this format's syntax. */
+  drop: RegExp
+}
+
+/** HTML, Svelte and the Web Component all end up writing a CSS declaration list. */
+const INLINE_SITE = /style="--wg-[^"]*"/
+const INLINE_DROP = /--wg-ink[^;"]*;\s*/
+
+const TOKEN_FORMATS: TokenFormat[] = [
+  {
+    id: 'html',
+    file: onlyFile,
+    read: (c) => parseDeclarations(rootStyle(c, 'html'), 'html'),
+    site: INLINE_SITE,
+    drop: INLINE_DROP,
+  },
+  {
+    id: 'react',
+    file: tsxFile,
+    read: (c) => objectTokens(c, REACT_TOKENS, 'react'),
+    site: REACT_TOKENS,
+    drop: JS_DROP,
+  },
+  {
+    id: 'vue',
+    file: onlyFile,
+    read: (c) => objectTokens(c, VUE_TOKENS, 'vue'),
+    site: VUE_TOKENS,
+    drop: JS_DROP,
+  },
+  {
+    id: 'svelte',
+    file: onlyFile,
+    read: (c) => parseDeclarations(rootStyle(c, 'svelte'), 'svelte'),
+    site: INLINE_SITE,
+    drop: INLINE_DROP,
+  },
+  {
+    id: 'webcomponent',
+    file: onlyFile,
+    read: (c) =>
+      parseDeclarations(rootStyle(webComponentMarkup(c), 'webcomponent'), 'webcomponent'),
+    site: INLINE_SITE,
+    drop: INLINE_DROP,
+  },
+]
+
+function tokenFile(props: Props, fmt: TokenFormat): string {
+  const target = buildTargets(spec, props).find((t) => t.id === fmt.id)
+  if (!target) throw new Error(`missing export target: ${fmt.id}`)
+  return fmt.file(target).content
+}
+
+/** `spec.vars` as an ordered list, which is what every encoder walks. */
+function canonicalTokens(props: Props): [string, string][] {
+  return Object.entries(spec.vars(props))
+}
+
+/**
+ * Colour values that stay inside what a CSS declaration, a JSON string and a
+ * single-quoted JS string can each carry unaided — no `;`, `:`, quote or
+ * ampersand, none of which the studio's colour controls can produce either.
+ * Within that, they are as awkward as real CSS gets: commas, spaces, decimals,
+ * percentages, slashes, nested parens and mixed case.
+ */
+const TOKEN_CASES: { label: string; props: Props }[] = [
+  { label: 'the defaults', props: { ...base } },
+  {
+    label: 'a custom hex trio, mixed case',
+    props: { ...base, bg: '#FFEEDD', ink: '#101112', accent: '#2F8BFF' },
+  },
+  {
+    label: 'functional colours carrying commas, spaces and decimals',
+    props: {
+      ...base,
+      bg: 'rgba(10, 20, 30, .5)',
+      ink: 'hsl(210 100% 50% / .8)',
+      accent: 'color-mix(in oklab, #2f8bff 60%, white)',
+    },
+  },
+  {
+    label: 'values that defer to the host page',
+    props: { ...base, bg: 'var(--brand-surface, #0a0a0a)', ink: 'currentColor', accent: 'inherit' },
+  },
+]
+
+describe('contact-card design token export parity (M-4)', () => {
+  it('vars is the three-token retheming contract, in this order', () => {
+    const props: Props = { ...base, bg: '#123456', ink: '#654321', accent: '#abcdef' }
+    expect(canonicalTokens(props)).toEqual([
+      ['--wg-bg', '#123456'],
+      ['--wg-ink', '#654321'],
+      ['--wg-accent', '#abcdef'],
+    ])
+  })
+
+  it('React declares the tokens on the root element rather than exporting them unused', () => {
+    const tsx = tokenFile({ ...base }, TOKEN_FORMATS[1])
+    expect(tsx).toContain('style={{ ...tokens, ...style }}')
+  })
+
+  describe.each(TOKEN_CASES)('$label', ({ props }) => {
+    it.each(TOKEN_FORMATS)('$id carries every token, unchanged and in order', (fmt) => {
+      expect(fmt.read(tokenFile(props, fmt))).toEqual(canonicalTokens(props))
+    })
+
+    it('all five formats agree with each other', () => {
+      const read = TOKEN_FORMATS.map((fmt) => fmt.read(tokenFile(props, fmt)))
+      for (const entries of read) expect(entries).toEqual(read[0])
+      expect(read[0]).toEqual(canonicalTokens(props))
+    })
+  })
+
+  /*
+   * A reader that shrugs at a broken export proves nothing, so each way a
+   * format could betray the token contract is injected into that format's real
+   * exported file and the reader is required to notice — either by reading back
+   * something other than `spec.vars`, or by refusing to read the file at all.
+   */
+  describe('the reader actually catches a divergent token', () => {
+    const props: Props = { ...base }
+
+    const EDITS: [string, (fmt: TokenFormat) => (region: string) => string][] = [
+      ['a renamed token', () => (r) => r.replace('--wg-accent', '--wg-accent-x')],
+      ['an altered value', () => (r) => r.replace('#ffffff', '#eeeeee')],
+      ['a dropped token', (fmt) => (r) => r.replace(fmt.drop, '')],
+      [
+        'a value that swallowed a delimiter',
+        () => (r) => r.replace('#2f8bff', '#2f8bff; --wg-accent: #ff0000'),
+      ],
+    ]
+
+    const MATRIX = TOKEN_FORMATS.flatMap((fmt) =>
+      EDITS.map(([label, edit]) => ({ id: fmt.id, label, fmt, edit: edit(fmt) })),
+    )
+
+    it.each(MATRIX)('$id: catches $label', ({ fmt, edit }) => {
+      const content = tokenFile(props, fmt)
+      const region = fmt.site.exec(content)
+      expect(region, `no token declaration site in ${fmt.id}`).not.toBeNull()
+
+      const damaged = edit(region![0])
+      // The injury must land, or "the reader caught nothing" would pass for the
+      // wrong reason.
+      expect(damaged, `the damage did not land in ${fmt.id}`).not.toBe(region![0])
+      const mutated =
+        content.slice(0, region!.index) + damaged + content.slice(region!.index + region![0].length)
+
+      let observed: [string, string][] | null = null
+      try {
+        observed = fmt.read(mutated)
+      } catch {
+        // Refusing to read a broken file is a catch, not a miss.
+        observed = null
+      }
+      expect(observed).not.toEqual(canonicalTokens(props))
+    })
+
+    it.each(TOKEN_FORMATS)('$id: reads the contract back from an undamaged export (the control)', (fmt) => {
+      expect(fmt.read(tokenFile(props, fmt))).toEqual(canonicalTokens(props))
     })
   })
 })
