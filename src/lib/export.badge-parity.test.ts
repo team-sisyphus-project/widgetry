@@ -29,6 +29,13 @@ import { WIDGETS } from '../widgets'
  * Layers 1 and 2 run over the whole live catalog and over a synthetic spec, so the
  * suite is spec-agnostic: no widget has to opt in, and a widget added tomorrow is
  * covered the day it lands.
+ *
+ * They run in both directions. Forward, a spec is given `added` and must export
+ * what it exported without it. Backward - the strip direction - a spec that
+ * *declares* `added` must export what it would with the field deleted; that list
+ * is derived from the catalog, so a widget shipping the field later is guarded
+ * without this file changing, and a fixture keeps the branch executing while no
+ * shipped widget declares it.
  */
 
 /** Every target `buildTargets` is contracted to emit, in the order it emits them. */
@@ -153,6 +160,64 @@ const SYNTHETIC: WidgetSpec = {
 /** The specs under guard: the whole live catalog plus the synthetic probe. */
 const SUBJECTS: WidgetSpec[] = [...WIDGETS, SYNTHETIC]
 
+/**
+ * The same spec with `added` removed - the key absent, not present and set to
+ * `undefined`. A spread that writes `added: undefined` still puts the key on the
+ * object, and a comparison against that is a comparison against a spec that
+ * technically declares the field. Deleting it keeps the control side honest.
+ */
+function withoutAdded(spec: WidgetSpec): WidgetSpec {
+  const { added: _added, ...rest } = spec
+  return rest
+}
+
+/**
+ * Assert two specs export the same bundle, byte for byte.
+ *
+ * `dated` and `plain` must differ in `added` and nothing else - same id, name,
+ * controls and authoring hooks - so any difference found here is the field
+ * leaking. Both directions of the guard reduce to this one check: adding the
+ * field to a spec that lacks it, and deleting it from a spec that ships it.
+ */
+function expectBundleParity(dated: WidgetSpec, plain: WidgetSpec): void {
+  const props = defaultProps(plain)
+
+  // Controls, not `added`, decide the props bag. Pinned before the bundles are
+  // built so a divergence here fails as itself rather than as a mystery diff.
+  expect(Object.keys(defaultProps(dated)), 'default props differ').toEqual(Object.keys(props))
+
+  const plainTargets = buildTargets(plain, props)
+  const datedTargets = buildTargets(dated, props)
+
+  // Parity is only worth as much as the set it covers: check the full seven.
+  expect(plainTargets.map((t) => t.id)).toEqual([...ALL_TARGET_IDS])
+  expect(datedTargets.map((t) => t.id)).toEqual(plainTargets.map((t) => t.id))
+
+  // Per-target comparison first: a failure names the target that leaked.
+  for (let i = 0; i < plainTargets.length; i++) {
+    expect(flatten(datedTargets[i]), `target "${plainTargets[i].id}" differs`).toBe(
+      flatten(plainTargets[i]),
+    )
+  }
+
+  // The README ships in every download beside the target files, and it quotes
+  // each target's hint and file names - so it is both a surface of its own and a
+  // second reading of theirs. Compared as a file, not merely scanned as text.
+  expect(flattenFile(readmeFor(dated, props)), 'README differs').toBe(
+    flattenFile(readmeFor(plain, props)),
+  )
+
+  // `config` serializes props and tokens rather than markup, so it is the one
+  // target a leak could reach without touching a template. Pin it on its own,
+  // parsed, so a stray key fails loudly instead of blending in.
+  const config = datedTargets.find((t) => t.id === 'config')!
+  const parsed = JSON.parse(config.files[0].content) as Record<string, unknown>
+  expect(Object.keys(parsed).sort()).toEqual(
+    ['generator', 'name', 'props', 'tokens', 'version', 'widget'].sort(),
+  )
+  expect(Object.keys(parsed.props as object)).toEqual(Object.keys(props))
+}
+
 describe('export parity: `added` never reaches an export target', () => {
   it('emits all seven targets, so parity below is checked against the full set', () => {
     const ids = buildTargets(SYNTHETIC, defaultProps(SYNTHETIC)).map((t) => t.id)
@@ -163,34 +228,11 @@ describe('export parity: `added` never reaches an export target', () => {
     it.each(SUBJECTS.map((s) => [s.id, s] as const))(
       'builds %s byte-identically to the same spec without `added`',
       (_id, spec) => {
-        const props = defaultProps(spec)
-        const plain = buildTargets(spec, props)
-        const dated = buildTargets({ ...spec, added }, props)
-
-        expect(dated.map((t) => t.id)).toEqual(plain.map((t) => t.id))
-
-        // Per-target comparison first: a failure names the target that leaked.
-        for (let i = 0; i < plain.length; i++) {
-          expect(flatten(dated[i]), `target "${plain[i].id}" differs`).toBe(flatten(plain[i]))
-        }
-
-        // The README ships in every download beside the target files, and it
-        // quotes each target's hint and file names - so it is both a surface of
-        // its own and a second reading of theirs. Compared as a file, not merely
-        // scanned as text.
-        expect(flattenFile(readmeFor({ ...spec, added }, props)), 'README differs').toBe(
-          flattenFile(readmeFor(spec, props)),
-        )
-
-        // `config` serializes props and tokens rather than markup, so it is the
-        // one target a leak could reach without touching a template. Pin it on
-        // its own, parsed, so a stray key fails loudly instead of blending in.
-        const config = dated.find((t) => t.id === 'config')!
-        const parsed = JSON.parse(config.files[0].content) as Record<string, unknown>
-        expect(Object.keys(parsed).sort()).toEqual(
-          ['generator', 'name', 'props', 'tokens', 'version', 'widget'].sort(),
-        )
-        expect(Object.keys(parsed.props as object)).toEqual(Object.keys(props))
+        // The control side is the spec with the field deleted, not the spec as
+        // written: the day a shipped widget declares `added`, this stays a
+        // comparison of "with" against "without" rather than of two dates.
+        const plain = withoutAdded(spec)
+        expectBundleParity({ ...plain, added }, plain)
       },
     )
 
@@ -231,6 +273,88 @@ describe('export parity: `added` never reaches an export target', () => {
 
     expect(seen.length).toBeGreaterThan(0)
     expect(seen.every((v) => v === undefined)).toBe(true)
+  })
+})
+
+/**
+ * The strip direction, driven by the catalog.
+ *
+ * The suite above works forward: it takes a spec and adds `added` to it. A widget
+ * that ships the field in its own catalog literal is the other direction - its
+ * bundle must equal what the same spec exports with the field *deleted*. The two
+ * directions meet in the same comparison, but only this one is derived from what
+ * the catalog actually declares, so a widget that starts carrying `added`
+ * tomorrow is under guard the day it lands, with no test edited.
+ *
+ * No shipped widget declares it today. A catalog-derived list would therefore be
+ * empty, and an empty parametrised suite is a suite that passes by not running -
+ * so a fixture spec that declares the field stands beside the derived entries and
+ * keeps the branch executing. It is a stand-in for a shipped widget, not a
+ * replacement for one: when a real widget declares `added`, it joins the list on
+ * its own.
+ */
+
+/** Catalog entries that declare `added` today. Derived, never listed by hand. */
+const DECLARED_IN_CATALOG: WidgetSpec[] = WIDGETS.filter((w) => w.added !== undefined)
+
+/**
+ * A stand-in for a shipped widget that declares `added`: the field is written
+ * into the spec itself, the way a catalog entry would write it, rather than
+ * spread on at comparison time.
+ */
+const PRE_DATED: WidgetSpec = {
+  ...SYNTHETIC,
+  id: 'parity-probe-dated',
+  name: 'Parity Probe Dated',
+  added: '2026-08-20',
+}
+
+/** Every spec under the strip-direction guard: the catalog's, plus the fixture. */
+const STRIP_SUBJECTS: WidgetSpec[] = [...DECLARED_IN_CATALOG, PRE_DATED]
+
+describe('export parity: a spec that ships `added` exports as if it never had it', () => {
+  it('guards every catalog widget that declares `added`, and runs on a fixture today', () => {
+    // Nothing here is keyed to a widget id. The catalog decides the membership;
+    // the fixture only guarantees the assertions below are not a no-op while the
+    // catalog's contribution is empty.
+    const derived = WIDGETS.filter((w) => w.added !== undefined).map((w) => w.id)
+    const guarded = STRIP_SUBJECTS.map((s) => s.id)
+
+    expect(guarded).toEqual([...derived, PRE_DATED.id])
+    for (const spec of STRIP_SUBJECTS) {
+      expect(spec.added, `${spec.id} is in the strip suite but declares no \`added\``).toBeDefined()
+    }
+  })
+
+  it.each(STRIP_SUBJECTS.map((s) => [s.id, s] as const))(
+    'builds %s byte-identically to the same spec with `added` deleted',
+    (_id, spec) => {
+      expectBundleParity(spec, withoutAdded(spec))
+    },
+  )
+
+  it.each(STRIP_SUBJECTS.map((s) => [s.id, s] as const))(
+    'ships no badge or freshness marker anywhere in the %s bundle',
+    (_id, spec) => {
+      expect(leaksIn(bundleSurfaces(spec, defaultProps(spec)))).toEqual([])
+    },
+  )
+
+  it('strips the field rather than blanking it, so the control side is truly undated', () => {
+    // `{ ...spec, added: undefined }` would leave the key in place and compare a
+    // dated spec against a spec that still declares the field. If this ever held
+    // for the wrong reason, every strip assertion above would go quiet.
+    expect('added' in PRE_DATED).toBe(true)
+    expect('added' in withoutAdded(PRE_DATED)).toBe(false)
+    expect(withoutAdded(PRE_DATED).added).toBeUndefined()
+  })
+
+  it('fails when the two sides differ in anything but `added`', () => {
+    // The comparison is only meaningful if it reacts. Change one field that does
+    // reach the export and it must break.
+    expect(() =>
+      expectBundleParity(PRE_DATED, { ...withoutAdded(PRE_DATED), name: 'Renamed Probe' }),
+    ).toThrow()
   })
 })
 
