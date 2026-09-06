@@ -1,6 +1,6 @@
 import type { WidgetSpec } from '../lib/types'
 import { clock, agenda, countdown } from './time'
-import { battery, brightness, toggle, compass, signal } from './system'
+import { battery, brightness, toggle, compass, signal, focusTimer } from './system'
 import { player, waveform, recordbutton } from './media'
 import { weather, waterwave, wallet, contactCard } from './data'
 import { checklist, habitStreak, sleepmode } from './life'
@@ -24,6 +24,7 @@ export const WIDGETS: WidgetSpec[] = [
   countdown,
   signal,
   recordbutton,
+  focusTimer,
 ]
 
 export const WIDGET_BY_ID = new Map(WIDGETS.map((w) => [w.id, w]))

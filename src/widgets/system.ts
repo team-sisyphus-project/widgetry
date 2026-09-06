@@ -484,3 +484,152 @@ export const signal: WidgetSpec = {
     }
   `),
 }
+
+/**
+ * Pomodoro timer. The phase in effect is carried by colour (a persistent accent
+ * swap) and the handover moment by a single ring pulse — `recordbutton`'s ping
+ * keyframe retargeted from an infinite "armed" loop to a one-shot event marker,
+ * because a ring pulsing for a whole 25 minute focus round would be noise.
+ *
+ * Markup renders the opening state: focus round one, full duration on the clock,
+ * nothing on the round track yet. The state classes below (`is-break`, `is-done`,
+ * `is-ready`, `is-signal`) are the surface a tick engine drives.
+ */
+export const focusTimer: WidgetSpec = {
+  id: 'focus-timer',
+  name: 'Focus Timer',
+  category: 'system',
+  blurb: 'A Pomodoro timer that alternates focus and break rounds with the time left in view.',
+  tags: ['system', 'timer', 'pomodoro', 'focus'],
+  frame: { w: 220, h: 200 },
+  interactive: true,
+  controls: [
+    { key: 'workMinutes', label: 'Focus', type: 'number', default: 25, min: 1, max: 90, step: 1, unit: 'min' },
+    { key: 'breakMinutes', label: 'Break', type: 'number', default: 5, min: 1, max: 30, step: 1, unit: 'min' },
+    { key: 'rounds', label: 'Rounds', type: 'number', default: 4, min: 1, max: 12, step: 1 },
+    { key: 'autoStart', label: 'Auto start next phase', type: 'boolean', default: true },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Focus accent', type: 'color', default: '#ff3b5c', group: 'Color' },
+    { key: 'breakAccent', label: 'Break accent', type: 'color', default: '#3ef07d', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+    '--wg-break-accent': String(p.breakAccent),
+  }),
+  markup: (p) => {
+    const rounds = Math.max(1, Math.round(Number(p.rounds)))
+    const work = Math.max(1, Math.round(Number(p.workMinutes)))
+    const clock = `${work < 10 ? '0' : ''}${work}:00`
+    // autoStart governs phase handover only, so round one is always live on mount;
+    // the advance control exists solely for the hold state and stays hidden until then.
+    const advance = p.autoStart
+      ? ''
+      : '<button class="wg-focus-timer__advance" type="button" data-advance>Start next phase</button>'
+    return dedent(`
+      <div class="wg-focus-timer__card is-work" data-card role="timer" aria-label="Focus timer">
+        <div class="wg-focus-timer__head">
+          <span class="wg-focus-timer__phase" data-phase>FOCUS</span>
+          <span class="wg-focus-timer__round" data-round>1 / ${rounds}</span>
+        </div>
+        <div class="wg-focus-timer__meter">
+          <strong class="wg-focus-timer__time" data-time>${clock}</strong>
+          <span class="wg-focus-timer__ring" data-ring aria-hidden="true"></span>
+        </div>
+        <div class="wg-focus-timer__track" data-track role="img" aria-label="0 of ${rounds} focus rounds complete">
+          ${repeat(rounds, (i) => `<i class="wg-focus-timer__mark" data-mark="${i}"></i>`)}
+        </div>
+        ${advance}
+      </div>
+    `).replace(/\n\s*\n/g, '\n')
+  },
+  css: () => dedent(`
+    .wg-focus-timer { width: 200px; }
+    .wg-focus-timer__card {
+      --wg-phase: var(--wg-accent);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+      padding: 20px;
+      border-radius: 22px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 500 12px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      box-sizing: border-box;
+    }
+    .wg-focus-timer__card.is-break { --wg-phase: var(--wg-break-accent); }
+    .wg-focus-timer__head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 10px;
+    }
+    .wg-focus-timer__phase {
+      font-weight: 600;
+      letter-spacing: .16em;
+      color: var(--wg-phase);
+      transition: color .25s ease;
+    }
+    .wg-focus-timer__round { opacity: .5; font-variant-numeric: tabular-nums; }
+    .wg-focus-timer__meter { position: relative; display: flex; }
+    .wg-focus-timer__time {
+      font-size: 34px;
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: -.02em;
+      font-variant-numeric: tabular-nums;
+      color: var(--wg-phase);
+      transition: color .25s ease, opacity .25s ease;
+    }
+    .wg-focus-timer__ring {
+      position: absolute;
+      inset: -10px -16px;
+      border: 2px solid var(--wg-phase);
+      border-radius: 999px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .wg-focus-timer__card.is-signal .wg-focus-timer__ring {
+      animation: wg-focus-timer-ping 1.6s ease-out 1;
+    }
+    .wg-focus-timer__track { display: flex; gap: 6px; }
+    .wg-focus-timer__mark {
+      flex: 1;
+      height: 6px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      transition: background .25s ease;
+    }
+    .wg-focus-timer__mark.is-done { background: var(--wg-phase); }
+    .wg-focus-timer__card.is-ready .wg-focus-timer__time { opacity: .45; }
+    .wg-focus-timer__card.is-done { --wg-phase: var(--wg-accent); }
+    .wg-focus-timer__card.is-done .wg-focus-timer__phase,
+    .wg-focus-timer__card.is-done .wg-focus-timer__time { opacity: .55; }
+    .wg-focus-timer__advance {
+      display: none;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--wg-phase);
+      color: var(--wg-bg);
+      font: 600 12px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      letter-spacing: .08em;
+      cursor: pointer;
+    }
+    .wg-focus-timer__card.is-ready .wg-focus-timer__advance { display: block; }
+    @keyframes wg-focus-timer-ping {
+      0% { transform: scale(1); opacity: .8; }
+      100% { transform: scale(1.22); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wg-focus-timer__card.is-signal .wg-focus-timer__ring { animation: none; }
+      .wg-focus-timer__phase,
+      .wg-focus-timer__time,
+      .wg-focus-timer__mark { transition: none; }
+    }
+  `),
+}
