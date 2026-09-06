@@ -303,3 +303,126 @@ describe('focus-timer tick engine — one-shot phase signal', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 })
+
+/**
+ * The ±1s bar of M-3, measured against an independent model of the schedule
+ * rather than against the engine's own arithmetic.
+ *
+ * The engine is deadline-anchored: `deadline = phaseStart + minutes * 60000`,
+ * and every tick redraws `clock(deadline - Date.now())`. Two things can put the
+ * readout out of step with the wall clock, and the bound tolerates both:
+ *
+ *   - `clock()` floors to whole seconds, so the readout sits up to 1s *below*
+ *     the true remaining time (offset `f`, the sub-second part of the remainder);
+ *   - a frame is only redrawn on a tick, so between ticks it sits up to the tick
+ *     gap *above* it (offset `e`, the time since the last redraw).
+ *
+ * The displayed error is therefore `e - f`, and since both are under one second
+ * the readout stays strictly inside ±1s at every instant — provided nothing
+ * accumulates. An engine that subtracted a fixed 1s per tick would satisfy the
+ * aligned case below and fail the two after it, because a late interval would
+ * bank an error that never washes out.
+ */
+describe('focus-timer tick engine — ±1s drift bound (M-3)', () => {
+  /** Phase lengths in order: focus, break, focus … with no trailing break. */
+  function schedule(workMinutes: number, breakMinutes: number, rounds: number): number[] {
+    const lengths: number[] = []
+    for (let r = 0; r < rounds; r++) {
+      lengths.push(workMinutes * MINUTE)
+      if (r < rounds - 1) lengths.push(breakMinutes * MINUTE)
+    }
+    return lengths
+  }
+
+  /**
+   * True remaining ms at `now`, derived from the schedule alone — no reference
+   * to the widget. Landing exactly on a boundary means the next phase has just
+   * started with its full duration; past the last one the cycle is over and the
+   * readout is clamped to zero.
+   */
+  function trueRemaining(lengths: number[], now: number): number {
+    let deadline = BASE
+    for (const length of lengths) {
+      deadline += length
+      if (now < deadline) return deadline - now
+    }
+    return 0
+  }
+
+  /** Assert the readout is inside ±1s of true remaining time, right now. */
+  function expectInsideOneSecond(lengths: number[]): void {
+    const expected = trueRemaining(lengths, Date.now())
+    const drift = shownSeconds() * SECOND - expected
+    expect(
+      Math.abs(drift),
+      `at +${Date.now() - BASE}ms the readout said ${clock()} with ${expected}ms truly left`,
+    ).toBeLessThan(SECOND)
+  }
+
+  it('stays inside 1s at every tick of a full work/break cycle', () => {
+    const lengths = schedule(2, 1, 3)
+    start({ workMinutes: 2, breakMinutes: 1, rounds: 3 })
+
+    const total = lengths.reduce((a, b) => a + b, 0)
+    expectInsideOneSecond(lengths) // first paint, before any interval fires
+    for (let elapsed = SECOND; elapsed <= total; elapsed += SECOND) {
+      vi.advanceTimersByTime(SECOND)
+      expectInsideOneSecond(lengths)
+    }
+    // The whole cycle really did run down, so the bound above was not measuring
+    // a timer that had stopped early.
+    expect(state()).toBe('done')
+    expect(clock()).toBe('00:00')
+  })
+
+  it('stays inside 1s when the interval fires late on every tick', () => {
+    // Five short phases rather than two long ones: every handover is a chance
+    // to bank the overshoot into the next deadline, and this bound refuses it.
+    const lengths = schedule(1, 1, 3)
+    start({ workMinutes: 1, breakMinutes: 1, rounds: 3 })
+
+    // Wall-clock lateness per tick, replayed in order: a busy or throttled tab
+    // never gets its callback back on the 1000ms grid. Some gaps run to nearly
+    // 2s, so phase boundaries land mid-gap and the catch-up path is exercised.
+    const late = [0, 120, 480, 15, 940, 300, 60, 770, 210, 999]
+    const total = lengths.reduce((a, b) => a + b, 0)
+
+    for (let k = 0; Date.now() - BASE < total + SECOND; k++) {
+      vi.setSystemTime(Date.now() + late[k % late.length]) // the clock slips…
+      vi.advanceTimersByTime(SECOND) // …and only then does the tick land
+      expectInsideOneSecond(lengths)
+    }
+    expect(state()).toBe('done')
+  })
+
+  it('stays inside 1s when sampled between ticks, off the second grid', () => {
+    const lengths = schedule(1, 1, 2)
+    start({ workMinutes: 1, breakMinutes: 1, rounds: 2 })
+
+    // 449ms is coprime with the 1000ms tick, so successive samples walk the
+    // whole sub-second range instead of always landing just after a redraw.
+    const STEP = 449
+    const total = lengths.reduce((a, b) => a + b, 0)
+    for (let elapsed = STEP; elapsed <= total + SECOND; elapsed += STEP) {
+      vi.advanceTimersByTime(STEP)
+      expectInsideOneSecond(lengths)
+    }
+    expect(state()).toBe('done')
+  })
+
+  it('stays inside 1s with late ticks and off-grid sampling together', () => {
+    const lengths = schedule(1, 1, 3)
+    start({ workMinutes: 1, breakMinutes: 1, rounds: 3 })
+
+    // Neither the redraw instants nor the sample instants line up with the
+    // phase boundaries here, so the remainder carries a sub-second part all the
+    // way through — the case where an accumulating engine drifts fastest.
+    const step = [317, 899, 71, 640, 1183, 208]
+    const total = lengths.reduce((a, b) => a + b, 0)
+    for (let k = 0; Date.now() - BASE < total + SECOND; k++) {
+      vi.advanceTimersByTime(step[k % step.length])
+      expectInsideOneSecond(lengths)
+    }
+    expect(state()).toBe('done')
+  })
+})

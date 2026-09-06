@@ -11,8 +11,8 @@ import { buildTargets } from '../lib/export'
  * browser-level M-1 check on the public catalog API. Browser automation is out
  * of bounds for this layer, so the wiring is proven here instead.
  *
- * The tick engine (phase advance, countdown, pulse firing) is a later grain;
- * everything below reads only the static spec surface this grain ships.
+ * Everything below reads only the static spec surface — the running tick engine
+ * (phase advance, countdown, pulse firing) is covered in `focus-timer.tick.test.ts`.
  */
 describe('focus-timer catalog wiring (M-1)', () => {
   it('appears in WIDGETS filtered to the System category (gallery System filter)', () => {

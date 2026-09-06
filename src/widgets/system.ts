@@ -492,8 +492,17 @@ export const signal: WidgetSpec = {
  * because a ring pulsing for a whole 25 minute focus round would be noise.
  *
  * Markup renders the opening state: focus round one, full duration on the clock,
- * nothing on the round track yet. The state classes below (`is-break`, `is-done`,
- * `is-ready`, `is-signal`) are the surface a tick engine drives.
+ * nothing on the round track yet. `script` takes it from there, driving the state
+ * classes below (`is-break`, `is-done`, `is-ready`, `is-signal`) and the mm:ss
+ * readout off one deadline per phase:
+ *
+ *     deadline  = phaseStart + (workMinutes | breakMinutes) * 60000
+ *     remaining = max(0, deadline - Date.now())   // recomputed every 1s tick
+ *
+ * The remaining time is derived from the clock rather than decremented, so a
+ * late or throttled interval changes when a frame is drawn, never what it says,
+ * and nothing banks an error across a handover. That is the ±1s bar of M-3,
+ * held under jittered ticks and off-grid sampling in `focus-timer.tick.test.ts`.
  */
 export const focusTimer: WidgetSpec = {
   id: 'focus-timer',
