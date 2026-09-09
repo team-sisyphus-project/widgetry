@@ -166,7 +166,62 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .card__meta > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .card__meta strong { font-size: 14px; font-weight: 600; }
 .card__meta span { font-size: 12px; line-height: 1.45; color: var(--muted); }
-.card__meta .btn { margin-left: auto; flex: 0 0 auto; }
+/* The star and the Open button ride together at the end of the meta row. */
+.card__meta .card__star { margin-left: auto; }
+.card__meta .btn { flex: 0 0 auto; }
+
+.card__star {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+
+.card__star:hover { color: var(--ink); background: var(--surface-2); border-color: var(--line); }
+.card__star.is-on { color: var(--accent); }
+.card__star.is-on:hover { color: var(--accent); }
+.card__star svg { display: block; width: 16px; height: 16px; }
+
+/* ----------------------------------------------------------------- shelf -- */
+
+/*
+ * Favorites and Recent sit between the toolbar and the grid, on the same column
+ * tracks as the grid so a shortcut card lines up with the catalog beneath it.
+ */
+.shelf {
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 28px 32px 0;
+}
+
+.shelf + .shelf { padding-top: 22px; }
+
+/* The hero is the only earlier <section>, so this is the last shelf on the page. */
+.shelf:last-of-type { padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+
+.shelf__title {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.shelf__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
 
 .empty { text-align: center; color: var(--muted); padding: 40px 0 80px; }
 

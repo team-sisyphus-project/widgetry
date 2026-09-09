@@ -5,6 +5,7 @@ import { Landing } from './components/Landing'
 import { Gallery } from './components/Gallery'
 import { Studio } from './components/Studio'
 import { GALLERY_HASH, buildHash, parseRoute } from './lib/share'
+import { prefs } from './lib/prefs'
 
 export default function App() {
   const [route, setRoute] = useState(() => parseRoute(location.hash))
@@ -16,6 +17,15 @@ export default function App() {
   }, [])
 
   const spec = route.widget ? getWidget(route.widget) : undefined
+
+  /*
+   * A widget counts as opened when the studio is showing it, whichever way the user
+   * got there — a gallery card, a shared link, a bookmark. Recording this at the
+   * route rather than at the card is what makes the last two count.
+   */
+  useEffect(() => {
+    if (spec) prefs.markRecent(spec.id)
+  }, [spec])
 
   const open = useCallback((next: WidgetSpec) => {
     location.hash = buildHash(next, {}, false)
