@@ -484,3 +484,160 @@ export const signal: WidgetSpec = {
     }
   `),
 }
+
+/**
+ * Fill ratio for the thermometer gauge, clamped to [0, 1].
+ * Same shape as the checklist / habit-streak progress rail: a single metric over its
+ * goal, locked at 1 the moment the goal is reached so overshoot never overdraws the tube.
+ */
+function gaugeRatio(current: number, target: number): number {
+  return Math.min(1, Math.max(0, current) / Math.max(1, target))
+}
+
+/** One decimal at most, so a shared URL carrying 72.4 still reads cleanly. */
+function readable(n: number): string {
+  return String(Math.round(n * 10) / 10)
+}
+
+export const thermometer: WidgetSpec = {
+  id: 'thermometer',
+  name: 'Thermometer',
+  category: 'system',
+  blurb: 'A vertical mercury gauge that climbs toward a target and turns over when it lands.',
+  tags: ['thermometer', 'gauge', 'progress'],
+  frame: { w: 220, h: 240 },
+  controls: [
+    { key: 'currentValue', label: 'Current value', type: 'number', default: 68, min: 0, max: 999, step: 1 },
+    { key: 'targetValue', label: 'Target value', type: 'number', default: 100, min: 1, max: 999, step: 1 },
+    { key: 'unit', label: 'Unit', type: 'text', default: '°F', maxLength: 6 },
+    { key: 'steps', label: 'Scale steps', type: 'number', default: 4, min: 2, max: 8, step: 1 },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'mercury', label: 'Mercury', type: 'color', default: '#ff3b5c', group: 'Color' },
+    { key: 'reached', label: 'At target', type: 'color', default: '#3ef07d', group: 'Color' },
+    { key: 'empty', label: 'Tube', type: 'color', default: '#2a2f2c', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-mercury': String(p.mercury),
+    '--wg-reached': String(p.reached),
+    '--wg-empty': String(p.empty),
+    '--wg-fill': `${gaugeRatio(Number(p.currentValue), Number(p.targetValue)) * 100}%`,
+  }),
+  markup: (p) => {
+    const current = Math.max(0, Number(p.currentValue))
+    const target = Math.max(1, Number(p.targetValue))
+    const steps = Math.min(8, Math.max(2, Math.round(Number(p.steps))))
+    const unit = String(p.unit).trim()
+    const u = unit ? esc(unit) : ''
+    const reached = current >= target
+    const over = Math.max(0, current - target)
+    /* The tube stops at the target, so the surplus is spoken instead of drawn. */
+    const spoken =
+      `${readable(current)}${unit} of ${readable(target)}${unit}` +
+      (over > 0 ? `, ${readable(over)}${unit} over target` : reached ? ', target reached' : '')
+    return dedent(`
+      <div class="wg-thermometer__gauge${reached ? ' is-reached' : ''}" role="meter"
+           aria-valuemin="0" aria-valuemax="${readable(target)}"
+           aria-valuenow="${readable(Math.min(current, target))}" aria-valuetext="${esc(spoken)}">
+        <div class="wg-thermometer__tube">
+          <i class="wg-thermometer__mercury" data-mercury></i>
+          ${repeat(steps - 1, (i) => {
+            const y = Math.round(((i + 1) / steps) * 1000) / 10
+            return `<i class="wg-thermometer__mark" style="--y:${y}%"></i>`
+          })}
+        </div>
+        <span class="wg-thermometer__bulb" aria-hidden="true"></span>
+      </div>
+      <div class="wg-thermometer__read">
+        <strong class="wg-thermometer__value" data-value>${readable(current)}${
+          unit ? `<span class="wg-thermometer__unit">${u}</span>` : ''
+        }</strong>
+        <span class="wg-thermometer__target" data-target>of ${readable(target)}${u}</span>${
+          over > 0
+            ? `\n        <span class="wg-thermometer__over" data-over>+${readable(over)}${u} over</span>`
+            : ''
+        }
+      </div>
+    `)
+  },
+  css: () => dedent(`
+    .wg-thermometer {
+      display: flex;
+      align-items: stretch;
+      gap: 18px;
+      width: 200px;
+      height: 220px;
+      padding: 20px;
+      border-radius: 22px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      box-sizing: border-box;
+    }
+    .wg-thermometer__gauge {
+      display: flex;
+      flex: 0 0 auto;
+      flex-direction: column;
+      align-items: center;
+      width: 34px;
+    }
+    .wg-thermometer__tube {
+      position: relative;
+      flex: 1;
+      width: 16px;
+      margin-bottom: -10px;
+      border-radius: 99px 99px 0 0;
+      background: var(--wg-empty);
+      overflow: hidden;
+    }
+    .wg-thermometer__mercury {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: var(--wg-fill);
+      background: var(--wg-mercury);
+      transition: height .35s cubic-bezier(.3, 1, .4, 1), background .3s ease;
+    }
+    .wg-thermometer__mark {
+      position: absolute;
+      right: 0;
+      bottom: var(--y);
+      width: 6px;
+      height: 2px;
+      background: var(--wg-ink);
+      opacity: .35;
+    }
+    .wg-thermometer__bulb {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--wg-mercury);
+      transition: background .3s ease;
+    }
+    .wg-thermometer__gauge.is-reached .wg-thermometer__mercury,
+    .wg-thermometer__gauge.is-reached .wg-thermometer__bulb { background: var(--wg-reached); }
+    .wg-thermometer__read {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .wg-thermometer__value { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+    .wg-thermometer__unit { font-size: 15px; font-weight: 500; margin-left: 2px; opacity: .7; }
+    .wg-thermometer__gauge.is-reached ~ .wg-thermometer__read .wg-thermometer__value { color: var(--wg-reached); }
+    .wg-thermometer__target { font-size: 12px; opacity: .55; }
+    .wg-thermometer__over {
+      align-self: flex-start;
+      padding: 3px 8px;
+      border-radius: 99px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      font-size: 12px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wg-thermometer__mercury, .wg-thermometer__bulb { transition: none; }
+    }
+  `),
+}
