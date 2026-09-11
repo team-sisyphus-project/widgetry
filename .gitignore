@@ -8,6 +8,9 @@ dist
 .emitted
 .tscheck
 
+# Poll vote store (POLL_DATA) — runtime state, never committed
+.data/
+
 # Charlie baseline (auto-added)
 node_modules/
 .pnp.*
