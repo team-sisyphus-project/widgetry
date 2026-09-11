@@ -1,6 +1,8 @@
 import type { WidgetSpec } from '../lib/types'
 import { dedent, esc } from '../lib/util'
 
+const SUN_DOT = '<circle class="wg-weather__sun" cx="21" cy="9" r="6"></circle>'
+
 const SKY: Record<string, string> = {
   sun: '<circle cx="16" cy="16" r="8" fill="currentColor"></circle>',
   cloud:
@@ -11,29 +13,98 @@ const SKY: Record<string, string> = {
     '<path d="M11 24.5l-1.6 3.6"></path><path d="M17 24.5l-1.6 3.6"></path><path d="M23 24.5l-1.6 3.6"></path></g>',
 }
 
+/**
+ * WMO weather code -> [condition wording, glyph key]. The card owns three glyphs,
+ * so snow rides the plain cloud rather than the rain drips: the wording carries the
+ * distinction and no glyph claims weather the card cannot draw.
+ */
+const WMO: Record<number, [string, string]> = {
+  0: ['Clear', 'sun'],
+  1: ['Mainly Clear', 'sun'],
+  2: ['Partly Cloudy', 'cloud'],
+  3: ['Overcast', 'cloud'],
+  45: ['Fog', 'cloud'],
+  48: ['Rime Fog', 'cloud'],
+  51: ['Light Drizzle', 'rain'],
+  53: ['Drizzle', 'rain'],
+  55: ['Heavy Drizzle', 'rain'],
+  56: ['Freezing Drizzle', 'rain'],
+  57: ['Freezing Drizzle', 'rain'],
+  61: ['Light Rain', 'rain'],
+  63: ['Rain', 'rain'],
+  65: ['Heavy Rain', 'rain'],
+  66: ['Freezing Rain', 'rain'],
+  67: ['Freezing Rain', 'rain'],
+  71: ['Light Snow', 'cloud'],
+  73: ['Snow', 'cloud'],
+  75: ['Heavy Snow', 'cloud'],
+  77: ['Snow Grains', 'cloud'],
+  80: ['Rain Showers', 'rain'],
+  81: ['Rain Showers', 'rain'],
+  82: ['Heavy Showers', 'rain'],
+  85: ['Snow Showers', 'cloud'],
+  86: ['Snow Showers', 'cloud'],
+  95: ['Thunderstorm', 'rain'],
+  96: ['Thunderstorm', 'rain'],
+  99: ['Thunderstorm', 'rain'],
+}
+
+/**
+ * Embed a value in a generated script as a JS literal. `JSON.stringify` alone is not
+ * enough: a widget's own props end up inside a `<script>` block in the HTML export, so
+ * `<` is escaped to keep a value like `</script>` from closing the block, and the two
+ * Unicode line terminators are escaped because they are legal inside a JSON string but
+ * not inside a JS one.
+ */
+function jsLit(value: unknown): string {
+  return JSON.stringify(value ?? null)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 export const weather: WidgetSpec = {
   id: 'weather',
   name: 'Forecast Card',
   category: 'data',
-  blurb: 'Current conditions with a five day strip that drifts on its own.',
+  blurb: 'Live conditions for a city you pick, with a sample reading when offline.',
   tags: ['weather', 'forecast', 'card'],
   frame: { w: 380, h: 200 },
   controls: [
-    { key: 'temp', label: 'Temperature', type: 'text', default: '79°F' },
-    { key: 'condition', label: 'Condition', type: 'text', default: 'Partly Cloudy with Light Rain' },
+    { key: 'live', label: 'Live data', type: 'boolean', default: true },
+    { key: 'city', label: 'City', type: 'text', default: 'San Francisco', maxLength: 64 },
+    {
+      key: 'units',
+      label: 'Units',
+      type: 'select',
+      default: 'f',
+      options: [
+        { value: 'f', label: '°F' },
+        { value: 'c', label: '°C' },
+      ],
+    },
+    { key: 'drift', label: 'Drifting clouds', type: 'boolean', default: true },
+    { key: 'temp', label: 'Temperature', type: 'text', default: '79°F', group: 'Sample reading' },
+    {
+      key: 'condition',
+      label: 'Condition',
+      type: 'text',
+      default: 'Partly Cloudy with Light Rain',
+      group: 'Sample reading',
+    },
     {
       key: 'icon',
       label: 'Icon',
       type: 'select',
       default: 'rain',
+      group: 'Sample reading',
       options: [
         { value: 'sun', label: 'Clear' },
         { value: 'cloud', label: 'Cloudy' },
         { value: 'rain', label: 'Rain' },
       ],
     },
-    { key: 'days', label: 'Day labels', type: 'text', default: 'MON,TUE,WED,THU,FRI' },
-    { key: 'drift', label: 'Drifting clouds', type: 'boolean', default: true },
+    { key: 'days', label: 'Day labels', type: 'text', default: 'MON,TUE,WED,THU,FRI', group: 'Sample reading' },
     { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
     { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
     { key: 'accent', label: 'Sun', type: 'color', default: '#ff9f2e', group: 'Color' },
@@ -53,7 +124,7 @@ export const weather: WidgetSpec = {
     return dedent(`
       <div class="wg-weather__now">
         <svg class="wg-weather__glyph${p.drift ? ' is-drifting' : ''}" viewBox="0 0 32 32" aria-hidden="true">
-          <circle class="wg-weather__sun" cx="21" cy="9" r="6"></circle>
+          ${SUN_DOT}
           ${glyph}
         </svg>
         <div class="wg-weather__read">
@@ -108,6 +179,130 @@ export const weather: WidgetSpec = {
       .wg-weather__glyph.is-drifting { animation: none; }
     }
   `),
+  /**
+   * Live reading, from Open-Meteo. No account and no key, so the exported file is as
+   * takeable as every other widget here — nothing to sign up for and nothing to paste
+   * in. Turning `live` off emits no script at all, leaving a static card.
+   *
+   * Failure is never rendered as an error: the sample reading already painted by
+   * `markup` stands, which is what keeps the gallery tile, the landing collage and a
+   * downloaded file honest with no network at all.
+   */
+  script: (p) => {
+    if (p.live !== true) return ''
+    const units = String(p.units) === 'c' ? 'c' : 'f'
+    return dedent(`
+      var CITY = ${jsLit(String(p.city).trim())};
+      var UNITS = ${jsLit(units)};
+      var OTHER = ${jsLit(units === 'c' ? 'f' : 'c')};
+      /* Ten minutes. One reading per city per unit is plenty for a card you glance at,
+         and it keeps a studio knob-turn from hammering a free public endpoint. */
+      var TTL = 600000;
+      var SUN = ${jsLit(SUN_DOT)};
+      var SKY = ${jsLit(SKY)};
+      var WMO = ${jsLit(WMO)};
+      var DAY = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+      /* The cache hangs off the window, not this closure: the studio re-runs this whole
+         body on every knob turn, so a closure-held cache would die on each edit and the
+         unit toggle would go back to the network for figures it already has. */
+      var scope = (root.ownerDocument && root.ownerDocument.defaultView) || root;
+      var store = scope.__wgWeatherCache || (scope.__wgWeatherCache = {});
+      var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      var dead = false;
+
+      function key(unit) { return CITY.toLowerCase() + '|' + unit; }
+      function num(v) { return typeof v === 'number' && isFinite(v); }
+      function read(code) { return WMO[code] || ['Cloudy', 'cloud']; }
+
+      function paint(d) {
+        var temp = root.querySelector('.wg-weather__temp');
+        if (temp) temp.textContent = Math.round(d.t) + '°' + d.u.toUpperCase();
+        var cond = root.querySelector('.wg-weather__condition');
+        if (cond) cond.textContent = d.label;
+        var glyph = root.querySelector('.wg-weather__glyph');
+        if (glyph) glyph.innerHTML = SUN + (SKY[d.icon] || SKY.cloud);
+        var cells = root.querySelectorAll('.wg-weather__day');
+        for (var i = 0; i < cells.length && i < d.days.length; i++) {
+          var label = cells[i].querySelector('span');
+          if (label) label.textContent = d.days[i].label;
+          var mini = cells[i].querySelector('svg');
+          if (mini) {
+            mini.innerHTML = SKY[d.days[i].icon] || SKY.cloud;
+            mini.classList.toggle('is-clear', d.days[i].icon === 'sun');
+          }
+        }
+      }
+
+      /* Everything past this point came off the wire, so nothing is believed until it
+         has been checked. A response that does not carry a finite temperature is no
+         reading at all and the sample stays. */
+      function shape(fc) {
+        if (!fc || !fc.current || !fc.daily) return null;
+        if (!num(fc.current.temperature_2m)) return null;
+        var now = read(fc.current.weather_code);
+        var times = fc.daily.time || [];
+        var codes = fc.daily.weather_code || [];
+        var days = [];
+        for (var i = 1; i < times.length; i++) {
+          var when = new Date(times[i] + 'T00:00:00Z');
+          if (isNaN(when.getTime())) continue;
+          days.push({ label: DAY[when.getUTCDay()], icon: read(codes[i])[1] });
+        }
+        return { t: fc.current.temperature_2m, u: UNITS, label: now[0], icon: now[1], days: days };
+      }
+
+      /* One reading fills both unit slots. The toggle re-reads figures already on the
+         card rather than waiting on a new request. */
+      function convert(d, to) {
+        return {
+          t: to === 'c' ? (d.t - 32) * 5 / 9 : d.t * 9 / 5 + 32,
+          u: to, label: d.label, icon: d.icon, days: d.days
+        };
+      }
+
+      function put(d) { store[key(d.u)] = { at: Date.now(), data: d }; }
+
+      function get(url) {
+        return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (res) {
+          if (!res || !res.ok) return Promise.reject(new Error('weather: request refused'));
+          return res.json();
+        });
+      }
+
+      function load() {
+        return get('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(CITY))
+          .then(function (geo) {
+            var place = geo && geo.results && geo.results[0];
+            /* No such place, or the widget was disposed while we waited: either way,
+               do not open a second request. */
+            if (dead || !place || !num(place.latitude) || !num(place.longitude)) return;
+            return get('https://api.open-meteo.com/v1/forecast?current=temperature_2m,weather_code&daily=weather_code&timezone=auto&forecast_days=7&temperature_unit=' + (UNITS === 'c' ? 'celsius' : 'fahrenheit') + '&latitude=' + place.latitude + '&longitude=' + place.longitude)
+              .then(function (fc) {
+                var d = shape(fc);
+                if (!d) return;
+                put(d);
+                put(convert(d, OTHER));
+                if (!dead) paint(d);
+              });
+          });
+      }
+
+      var hit = CITY ? store[key(UNITS)] : null;
+      if (hit && Date.now() - hit.at < TTL) paint(hit.data);
+      else if (CITY && typeof fetch === 'function') {
+        load().catch(function () {
+          /* Silent on purpose. The card never renders an error in place of itself; the
+             sample reading already on screen is the answer. */
+        });
+      }
+
+      return function () {
+        dead = true;
+        if (ctrl) ctrl.abort();
+      };
+    `)
+  },
 }
 
 export const waterwave: WidgetSpec = {
