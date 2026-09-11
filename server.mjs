@@ -7,12 +7,20 @@
  * whole product is "code you own with no runtime", and the thing that ships it
  * should hold the same line.
  *
+ * It is no longer *only* a static server: `/api/polls` is handled here too, by
+ * the poll API, which is the one part of this product with server state. The
+ * split is deliberate and one line wide — the API claims its prefix or declines,
+ * and everything it declines reaches the static path unchanged.
+ *
  * Contract:
  *   - binds `process.env.PORT` (never a hardcoded port when PORT is set)
  *   - binds `process.env.HOST`, default `0.0.0.0`, so a container can reach it
  *   - plain HTTP only — TLS is terminated upstream, so no https redirect
  *   - SPA fallback: any extensionless path renders `index.html` with 200
  *   - missing *assets* still 404, so a broken bundle reference is visible
+ *   - `/api/**` belongs to `server/poll-api.mjs`: JSON in, JSON out, JSON 404s.
+ *     Everything outside that prefix is GET/HEAD only and 405s otherwise, as
+ *     it always has.
  */
 import { createServer as createHttpServer } from 'node:http'
 import { createReadStream } from 'node:fs'
@@ -21,6 +29,8 @@ import { createGzip } from 'node:zlib'
 import { pipeline } from 'node:stream/promises'
 import { join, resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createPollStore } from './server/poll-store.mjs'
+import { createPollApi } from './server/poll-api.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 
@@ -137,10 +147,18 @@ function sendError(res, status, message) {
  * Build the request listener. Exported separately from `startServer` so tests
  * can point it at a fixture directory without binding a port.
  */
-export function createRequestListener({ root = DEFAULT_ROOT } = {}) {
+export function createRequestListener({ root = DEFAULT_ROOT, store } = {}) {
   const indexPath = join(resolve(root), 'index.html')
+  // Constructing the store only resolves a path; it does not touch the disk
+  // until a request actually asks for a poll.
+  const pollApi = createPollApi({ store: store ?? createPollStore() })
 
   return async function handle(req, res) {
+    // The API runs first and answers `true` when the path was its own. Static
+    // serving below is reached only by requests the API declined, so its
+    // behaviour — including the GET/HEAD-only rule — is untouched.
+    if (await pollApi(req, res)) return
+
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD')
       sendError(res, 405, 'Method Not Allowed')
@@ -235,8 +253,9 @@ export function startServer({
   port = Number(process.env.PORT) || DEFAULT_PORT,
   host = process.env.HOST || DEFAULT_HOST,
   root = DEFAULT_ROOT,
+  store,
 } = {}) {
-  const server = createServer({ root })
+  const server = createServer({ root, store })
   return new Promise((res, rej) => {
     server.once('error', rej)
     server.listen(port, host, () => {
@@ -257,9 +276,13 @@ async function main() {
     process.exit(1)
   }
 
-  const server = await startServer({ root })
+  const store = createPollStore()
+  const server = await startServer({ root, store })
   const { address, port } = server.address()
   console.log(`[widgetry] serving ${root} on http://${address}:${port}`)
+  // Worth one line at boot: this path is the only state the product has, and
+  // an operator who does not know where it is cannot back it up.
+  console.log(`[widgetry] poll data at ${store.path}`)
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
