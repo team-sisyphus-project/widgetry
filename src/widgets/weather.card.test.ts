@@ -394,6 +394,15 @@ describe('forecast card — everything visible is a token', () => {
     expect(vars['--wg-loop-breathe']).toBe('1.8s')
   })
 
+  it('takes its corners from the registered scale', () => {
+    // The Design Spec's radius scale settles the fully-rounded end at 99px: 999px
+    // renders identically, so a second spelling of the same corner is drift, not a
+    // choice. Pinned here because nothing else would catch it coming back.
+    expect(vars['--wg-radius-control']).toBe('99px')
+    expect(vars['--wg-radius-card']).toBe('26px')
+    expect(vars['--wg-radius-inline']).toBe('6px')
+  })
+
   it('writes no literal colour, type, corner, opacity or duration into the stylesheet', () => {
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i)
     expect(css).not.toMatch(/opacity: (?!var\()/)

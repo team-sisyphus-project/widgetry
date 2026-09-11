@@ -208,7 +208,7 @@ export const weather: WidgetSpec = {
     '--wg-inset-card-inline': '24px',
     /* radius */
     '--wg-radius-card': '26px',
-    '--wg-radius-control': '999px',
+    '--wg-radius-control': '99px',
     '--wg-radius-inline': '6px',
     /* emphasis */
     '--wg-emphasis-primary': '1',
