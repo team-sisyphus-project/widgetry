@@ -53,6 +53,25 @@ Any single file, the whole target as a `.zip`, or every target at once. Zipping
 is done in the browser with a small store only ZIP writer, so nothing is uploaded
 anywhere.
 
+## The one widget that reaches the network
+
+Every widget runs on nothing but the file you took. The Forecast Card is the single
+exception: with **Live data** on it calls Open-Meteo — `geocoding-api.open-meteo.com`
+to turn the typed city into coordinates, then `api.open-meteo.com` for the current
+conditions and the three day outlook. That is the whole of its network use.
+
+- No account, no API key, no SDK. The endpoints are keyless, so the exported file is
+  as dependency free as every other one.
+- One reading per city per unit is cached for ten minutes, and a single reading fills
+  both the °C and the °F slot, so flipping the unit costs no request.
+- The only value that leaves the page is the city name, and only to the provider.
+- A failed request, a refused one, an unknown place or no network at all leaves the
+  card showing the sample reading it was painted with, and saying so in its caption.
+  It never renders an error in place of itself.
+- Turn **Live data** off and the exported file carries no networking code at all. The
+  card still runs, on its sample reading, and the °C/°F toggle still answers. The
+  landing collage mounts it exactly this way, so a first visit reaches nothing.
+
 ## Retheming
 
 Every colour and dimension is a CSS custom property on the root element. Nothing

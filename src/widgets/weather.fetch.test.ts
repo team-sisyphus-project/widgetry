@@ -155,8 +155,8 @@ describe('forecast card — live reading', () => {
     open({ city: freshCity() })
     await settle()
 
-    // DAYS[0] is today; the strip carries what comes next.
-    expect(dayLabels()).toEqual(['SAT', 'SUN', 'MON', 'TUE', 'WED'])
+    // DAYS[0] is today; the strip carries the next three, per the Design Spec.
+    expect(dayLabels()).toEqual(['SAT', 'SUN', 'MON'])
     const minis = [...host.querySelectorAll('.wg-weather__mini')]
     // weather_code[1] = 0 (clear) takes the warm accent; [2] = 61 (rain) does not.
     expect(minis[0].classList.contains('is-clear')).toBe(true)
@@ -229,7 +229,9 @@ describe('forecast card — a card that cannot read never shows an error', () =>
   const sample = defaultProps(spec)
 
   function expectSampleStanding(): void {
-    expect(temp()).toBe(String(sample.temp))
+    // The sample temperature is authored as a number in Fahrenheit; the card writes
+    // it in whatever unit the toggle is on, which for default props is °F.
+    expect(temp()).toBe(`${sample.temp}°F`)
     expect(condition()).toBe(String(sample.condition))
     expect(dayLabels()).toEqual(String(sample.days).split(','))
   }
@@ -269,12 +271,16 @@ describe('forecast card — a card that cannot read never shows an error', () =>
     expectSampleStanding()
   })
 
-  it('asks for nothing when live is off, and ships no script to export', async () => {
+  it('asks for nothing when live is off, and ships no networking to export', async () => {
     open({ city: freshCity(), live: false })
     await settle()
 
     expect(calls).toHaveLength(0)
-    expect(spec.script!({ ...sample, live: false })).toBe('')
+    // The exported script still answers the Unit Toggle — it just cannot reach a
+    // provider: the half of the body that knows what a request is never ships.
+    const body = spec.script!({ ...sample, live: false })
+    expect(body).not.toContain('fetch(')
+    expect(body).not.toContain('open-meteo')
     expectSampleStanding()
   })
 

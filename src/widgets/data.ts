@@ -1,4 +1,4 @@
-import type { WidgetSpec } from '../lib/types'
+import type { Props, WidgetSpec } from '../lib/types'
 import { dedent, esc } from '../lib/util'
 
 const SUN_DOT = '<circle class="wg-weather__sun" cx="21" cy="9" r="6"></circle>'
@@ -63,13 +63,64 @@ function jsLit(value: unknown): string {
     .replace(/\u2029/g, '\\u2029')
 }
 
+/** Day labels the Outlook Strip falls back to when fewer than three are authored. */
+const SAMPLE_DAYS = ['MON', 'TUE', 'WED']
+
+/** The sample sky per Day Cell. One clear day, so exactly one cell carries the accent. */
+const SAMPLE_DAY_SKY = ['cloud', 'cloud', 'sun']
+
+/** The Unit Toggle, in the order it is read. Both options are always on the card. */
+const UNIT_LABEL: [string, string][] = [
+  ['f', '°F'],
+  ['c', '°C'],
+]
+
+/**
+ * What the Status Caption says in each state. `live` says nothing at all: a card
+ * showing current figures for the named place makes no claim about itself.
+ */
+const CAPTION = {
+  loading: 'Checking the sky…',
+  sample: 'Sample reading',
+  offline: 'Offline — showing a sample reading',
+}
+
+function unitOf(p: Props): 'f' | 'c' {
+  return String(p.units) === 'c' ? 'c' : 'f'
+}
+
+/** Sample figures are authored in Fahrenheit; the toggle converts, it never re-reads. */
+function inUnit(t: number, from: 'f' | 'c', to: 'f' | 'c'): number {
+  if (from === to) return t
+  return to === 'c' ? ((t - 32) * 5) / 9 : (t * 9) / 5 + 32
+}
+
+function readout(t: number, unit: 'f' | 'c'): string {
+  return `${Math.round(t)}°${unit.toUpperCase()}`
+}
+
+/** Exactly three labels, always: the strip is three Day Cells wide in every state. */
+function dayLabels(p: Props): string[] {
+  const typed = String(p.days)
+    .split(',')
+    .map((d) => d.trim())
+    .filter(Boolean)
+  return SAMPLE_DAYS.map((fallback, i) => typed[i] ?? fallback)
+}
+
+/** True when the card both may ask for a reading and has a place to ask about. */
+function asking(p: Props): boolean {
+  return p.live === true && String(p.city).trim() !== ''
+}
+
 export const weather: WidgetSpec = {
   id: 'weather',
   name: 'Forecast Card',
   category: 'data',
   blurb: 'Live conditions for a city you pick, with a sample reading when offline.',
   tags: ['weather', 'forecast', 'card'],
-  frame: { w: 380, h: 200 },
+  frame: { w: 380, h: 260 },
+  interactive: true,
   controls: [
     { key: 'live', label: 'Live data', type: 'boolean', default: true },
     { key: 'city', label: 'City', type: 'text', default: 'San Francisco', maxLength: 64 },
@@ -84,7 +135,17 @@ export const weather: WidgetSpec = {
       ],
     },
     { key: 'drift', label: 'Drifting clouds', type: 'boolean', default: true },
-    { key: 'temp', label: 'Temperature', type: 'text', default: '79°F', group: 'Sample reading' },
+    {
+      key: 'temp',
+      label: 'Temperature',
+      type: 'number',
+      default: 79,
+      min: -60,
+      max: 130,
+      step: 1,
+      unit: '°F',
+      group: 'Sample reading',
+    },
     {
       key: 'condition',
       label: 'Condition',
@@ -104,120 +165,416 @@ export const weather: WidgetSpec = {
         { value: 'rain', label: 'Rain' },
       ],
     },
-    { key: 'days', label: 'Day labels', type: 'text', default: 'MON,TUE,WED,THU,FRI', group: 'Sample reading' },
+    { key: 'days', label: 'Day labels', type: 'text', default: 'MON,TUE,WED', group: 'Sample reading' },
     { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
     { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
     { key: 'accent', label: 'Sun', type: 'color', default: '#ff9f2e', group: 'Color' },
   ],
+  /**
+   * The card's whole token layer, written onto the root as custom properties. Nothing
+   * in `css` below is a literal design value: every colour, size, gap, corner, opacity
+   * and duration is read back from here, so a taker restyles the card by overriding
+   * tokens rather than by hunting through rules. The four data states are expressed the
+   * same way - they re-point which of these tokens is in force and change nothing else.
+   */
   vars: (p) => ({
+    /* colour */
     '--wg-bg': String(p.bg),
     '--wg-ink': String(p.ink),
     '--wg-accent': String(p.accent),
+    /* typography */
+    '--wg-font': 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+    '--wg-text-xs': '10px',
+    '--wg-text-sm': '12px',
+    '--wg-text-md': '13px',
+    '--wg-text-display': '32px',
+    '--wg-weight-regular': '500',
+    '--wg-weight-strong': '600',
+    '--wg-line-tight': '1',
+    '--wg-line-snug': '1.3',
+    '--wg-track-tight': '-.02em',
+    '--wg-track-wide': '.1em',
+    /* spacing */
+    '--wg-gap-2xs': '4px',
+    '--wg-gap-xs': '8px',
+    '--wg-gap-sm': '12px',
+    '--wg-gap-md': '16px',
+    '--wg-gap-lg': '18px',
+    '--wg-inset-card-block': '22px',
+    '--wg-inset-card-inline': '24px',
+    /* radius */
+    '--wg-radius-card': '26px',
+    '--wg-radius-control': '999px',
+    '--wg-radius-inline': '6px',
+    /* emphasis */
+    '--wg-emphasis-primary': '1',
+    '--wg-emphasis-secondary': '.55',
+    '--wg-emphasis-tertiary': '.45',
+    '--wg-emphasis-placeholder': '.3',
+    /* motion */
+    '--wg-duration-quick': '.15s',
+    '--wg-duration-base': '.3s',
+    '--wg-ease-standard': 'ease',
+    '--wg-ease-loop': 'ease-in-out',
+    '--wg-loop-drift': '5s',
+    '--wg-loop-breathe': '1.8s',
   }),
+  /**
+   * One structure, four states. No state adds, removes or reorders a part, so moving
+   * between them never shifts anything on the card - the state only decides which
+   * emphasis and accent each part is drawn at, and whether the caption has anything
+   * to say. The state lives on the card element because the root carries the tokens.
+   *
+   * The place field ships read-only and the script unlocks it, so a card with no
+   * script still names its place and never offers a search it cannot run.
+   */
   markup: (p) => {
-    const days = String(p.days)
-      .split(',')
-      .map((d) => d.trim())
-      .filter(Boolean)
-      .slice(0, 7)
+    const unit = unitOf(p)
+    const live = asking(p)
     const glyph = SKY[String(p.icon)] ?? SKY.cloud
-    return dedent(`
-      <div class="wg-weather__now">
-        <svg class="wg-weather__glyph${p.drift ? ' is-drifting' : ''}" viewBox="0 0 32 32" aria-hidden="true">
-          ${SUN_DOT}
-          ${glyph}
-        </svg>
-        <div class="wg-weather__read">
-          <strong class="wg-weather__temp">${esc(String(p.temp))}</strong>
-          <span class="wg-weather__condition">${esc(String(p.condition))}</span>
-        </div>
-      </div>
-      <div class="wg-weather__strip">
-        ${days
-          .map(
-            (d, i) => `<div class="wg-weather__day">
+    const units = UNIT_LABEL.map(
+      ([u, label]) =>
+        `<button class="wg-weather__unit${u === unit ? ' is-on' : ''}" type="button"
+                  data-unit="${u}" aria-pressed="${u === unit ? 'true' : 'false'}">${label}</button>`,
+    ).join('\n          ')
+    const days = dayLabels(p)
+      .map(
+        (d, i) => `<div class="wg-weather__day">
           <span>${esc(d)}</span>
-          <svg viewBox="0 0 32 32" aria-hidden="true" class="wg-weather__mini${i === days.length - 1 ? ' is-clear' : ''}">
-            ${i === days.length - 1 ? SKY.sun : SKY.cloud}
+          <svg viewBox="0 0 32 32" aria-hidden="true" class="wg-weather__mini${SAMPLE_DAY_SKY[i] === 'sun' ? ' is-clear' : ''}">
+            ${SKY[SAMPLE_DAY_SKY[i]]}
           </svg>
         </div>`,
-          )
-          .join('')}
+      )
+      .join('\n        ')
+    return dedent(`
+      <div class="wg-weather__card" data-state="${live ? 'loading' : 'no-data'}">
+        <div class="wg-weather__bar">
+          <input class="wg-weather__place" type="text" data-place readonly
+                 value="${esc(String(p.city).trim())}" placeholder="Search a city" aria-label="City" />
+          <div class="wg-weather__units" role="group" aria-label="Temperature unit">
+            ${units}
+          </div>
+        </div>
+        <div class="wg-weather__now">
+          <svg class="wg-weather__glyph${p.drift ? ' is-drifting' : ''}" viewBox="0 0 32 32" aria-hidden="true">
+            ${SUN_DOT}
+            ${glyph}
+          </svg>
+          <div class="wg-weather__read">
+            <strong class="wg-weather__temp">${readout(inUnit(Number(p.temp), 'f', unit), unit)}</strong>
+            <span class="wg-weather__condition">${esc(String(p.condition))}</span>
+          </div>
+        </div>
+        <div class="wg-weather__strip">
+          ${days}
+        </div>
+        <p class="wg-weather__status" data-status aria-live="polite">${live ? CAPTION.loading : CAPTION.sample}</p>
       </div>
     `)
   },
   css: () => dedent(`
     .wg-weather {
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
       width: 360px;
-      padding: 22px 24px;
-      border-radius: 26px;
+      box-sizing: border-box;
+      padding: var(--wg-inset-card-block) var(--wg-inset-card-inline);
+      border-radius: var(--wg-radius-card);
       background: var(--wg-bg);
       color: var(--wg-ink);
-      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      box-sizing: border-box;
+      font-family: var(--wg-font);
+      font-size: var(--wg-text-md);
+      font-weight: var(--wg-weight-regular);
+      line-height: var(--wg-line-snug);
     }
-    .wg-weather__now { display: flex; align-items: center; gap: 16px; }
-    .wg-weather__glyph { width: 74px; height: 74px; flex: 0 0 auto; color: var(--wg-ink); }
-    .wg-weather__sun { fill: var(--wg-accent); }
-    .wg-weather__glyph.is-drifting { animation: wg-weather-drift 5s ease-in-out infinite; }
-    .wg-weather__read { display: flex; flex-direction: column; gap: 4px; }
-    .wg-weather__temp { font-size: 32px; font-weight: 600; letter-spacing: -.02em; }
-    .wg-weather__condition { font-size: 12px; opacity: .55; }
-    .wg-weather__strip { display: flex; justify-content: space-between; gap: 8px; }
-    .wg-weather__day { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; }
-    .wg-weather__day span { font-size: 10px; letter-spacing: .1em; opacity: .45; }
-    .wg-weather__mini { width: 30px; height: 30px; color: var(--wg-ink); }
-    .wg-weather__mini.is-clear { color: var(--wg-accent); }
+
+    /* Three emphasis slots and one accent cue. Each state re-points them and touches
+       nothing else, which is what keeps a state change from moving the card. */
+    .wg-weather__card {
+      --wg-em-read: var(--wg-emphasis-primary);
+      --wg-em-caption: var(--wg-emphasis-secondary);
+      --wg-em-label: var(--wg-emphasis-tertiary);
+      --wg-cue: var(--wg-accent);
+      display: flex;
+      flex-direction: column;
+      gap: var(--wg-gap-lg);
+    }
+    .wg-weather__card[data-state="loading"] {
+      --wg-em-read: var(--wg-emphasis-placeholder);
+      --wg-em-caption: var(--wg-emphasis-placeholder);
+      --wg-em-label: var(--wg-emphasis-placeholder);
+    }
+    .wg-weather__card[data-state="stale"] {
+      --wg-em-read: var(--wg-emphasis-secondary);
+      --wg-em-caption: var(--wg-emphasis-tertiary);
+      --wg-em-label: var(--wg-emphasis-tertiary);
+    }
+    /* A sample reading drops the warm cue to plain ink: nothing illustrative gets to
+       wear the mark that singles out a measured value. */
+    .wg-weather__card[data-state="no-data"] {
+      --wg-em-read: var(--wg-emphasis-secondary);
+      --wg-em-caption: var(--wg-emphasis-tertiary);
+      --wg-em-label: var(--wg-emphasis-tertiary);
+      --wg-cue: var(--wg-ink);
+    }
+
+    .wg-weather__bar { display: flex; align-items: center; gap: var(--wg-gap-sm); }
+    .wg-weather__place {
+      flex: 1 1 auto;
+      min-width: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-overflow: ellipsis;
+      opacity: var(--wg-em-caption);
+      transition: opacity var(--wg-duration-quick) var(--wg-ease-standard);
+    }
+    .wg-weather__place::placeholder { color: currentColor; opacity: var(--wg-emphasis-primary); }
+    .wg-weather__place:hover:not([readonly]), .wg-weather__place:focus { opacity: var(--wg-em-read); }
+    .wg-weather__place:focus {
+      outline: none;
+      text-decoration: underline;
+      text-underline-offset: var(--wg-gap-2xs);
+    }
+
+    .wg-weather__units { display: flex; align-items: center; gap: var(--wg-gap-2xs); flex: 0 0 auto; }
+    .wg-weather__unit {
+      margin: 0;
+      padding: var(--wg-gap-2xs) var(--wg-gap-xs);
+      border: 0;
+      background: none;
+      color: inherit;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--wg-text-sm);
+      font-weight: var(--wg-weight-regular);
+      line-height: var(--wg-line-tight);
+      letter-spacing: var(--wg-track-wide);
+      border-radius: var(--wg-radius-control);
+      opacity: var(--wg-em-label);
+      transition: opacity var(--wg-duration-quick) var(--wg-ease-standard),
+                  color var(--wg-duration-quick) var(--wg-ease-standard);
+    }
+    .wg-weather__unit:hover { opacity: var(--wg-em-caption); }
+    .wg-weather__unit:focus-visible {
+      outline: none;
+      text-decoration: underline;
+      text-underline-offset: var(--wg-gap-2xs);
+    }
+    .wg-weather__unit.is-on {
+      color: var(--wg-cue);
+      font-weight: var(--wg-weight-strong);
+      opacity: var(--wg-em-read);
+    }
+
+    .wg-weather__now { display: flex; align-items: center; gap: var(--wg-gap-md); }
+    .wg-weather__glyph {
+      width: 74px;
+      height: 74px;
+      flex: 0 0 auto;
+      color: var(--wg-ink);
+      opacity: var(--wg-em-read);
+      transition: opacity var(--wg-duration-base) var(--wg-ease-standard);
+    }
+    .wg-weather__sun { fill: var(--wg-cue); }
+    .wg-weather__glyph.is-drifting {
+      animation: wg-weather-drift var(--wg-loop-drift) var(--wg-ease-loop) infinite;
+    }
+    .wg-weather__read {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: var(--wg-gap-2xs);
+      min-width: 0;
+    }
+    .wg-weather__temp {
+      font-size: var(--wg-text-display);
+      font-weight: var(--wg-weight-strong);
+      line-height: var(--wg-line-tight);
+      letter-spacing: var(--wg-track-tight);
+      opacity: var(--wg-em-read);
+      transition: opacity var(--wg-duration-base) var(--wg-ease-standard);
+    }
+    .wg-weather__condition { font-size: var(--wg-text-sm); opacity: var(--wg-em-caption); }
+
+    .wg-weather__strip { display: flex; justify-content: space-between; gap: var(--wg-gap-xs); }
+    .wg-weather__day {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--wg-gap-xs);
+      flex: 1 1 0;
+    }
+    .wg-weather__day span {
+      font-size: var(--wg-text-xs);
+      line-height: var(--wg-line-tight);
+      letter-spacing: var(--wg-track-wide);
+      opacity: var(--wg-em-label);
+    }
+    .wg-weather__mini { width: 30px; height: 30px; color: var(--wg-ink); opacity: var(--wg-em-read); }
+    .wg-weather__mini.is-clear { color: var(--wg-cue); }
+
+    /* The caption holds its line whether or not it has something to say, so a live
+       card and a stale one are exactly the same height. */
+    .wg-weather__status {
+      margin: 0;
+      min-height: calc(var(--wg-text-sm) * var(--wg-line-snug));
+      font-size: var(--wg-text-sm);
+      opacity: var(--wg-em-label);
+    }
+
+    /* The skeleton veil. Each figure keeps its own box and is drawn as a bar instead
+       of text, so nothing claims to be a measurement and nothing moves when one lands. */
+    .wg-weather__card[data-state="loading"] .wg-weather__temp,
+    .wg-weather__card[data-state="loading"] .wg-weather__condition,
+    .wg-weather__card[data-state="loading"] .wg-weather__day span {
+      color: transparent;
+      background: var(--wg-ink);
+      border-radius: var(--wg-radius-inline);
+      animation: wg-weather-breathe var(--wg-loop-breathe) var(--wg-ease-loop) infinite;
+    }
+    .wg-weather__card[data-state="loading"] .wg-weather__glyph,
+    .wg-weather__card[data-state="loading"] .wg-weather__mini {
+      background: var(--wg-ink);
+      border-radius: var(--wg-radius-control);
+      animation: wg-weather-breathe var(--wg-loop-breathe) var(--wg-ease-loop) infinite;
+    }
+    .wg-weather__card[data-state="loading"] .wg-weather__glyph > *,
+    .wg-weather__card[data-state="loading"] .wg-weather__mini > * { visibility: hidden; }
+
     @keyframes wg-weather-drift {
       0%, 100% { transform: translateX(0); }
       50% { transform: translateX(4px); }
     }
+    @keyframes wg-weather-breathe {
+      0%, 100% { opacity: var(--wg-emphasis-placeholder); }
+      50% { opacity: var(--wg-emphasis-tertiary); }
+    }
     @media (prefers-reduced-motion: reduce) {
-      .wg-weather__glyph.is-drifting { animation: none; }
+      .wg-weather__glyph.is-drifting,
+      .wg-weather__card[data-state="loading"] .wg-weather__temp,
+      .wg-weather__card[data-state="loading"] .wg-weather__condition,
+      .wg-weather__card[data-state="loading"] .wg-weather__day span,
+      .wg-weather__card[data-state="loading"] .wg-weather__glyph,
+      .wg-weather__card[data-state="loading"] .wg-weather__mini { animation: none; }
+      .wg-weather__place,
+      .wg-weather__unit,
+      .wg-weather__glyph,
+      .wg-weather__temp { transition: none; }
     }
   `),
   /**
-   * Live reading, from Open-Meteo. No account and no key, so the exported file is as
-   * takeable as every other widget here — nothing to sign up for and nothing to paste
-   * in. Turning `live` off emits no script at all, leaving a static card.
+   * Two halves. The first runs everywhere and needs no network at all: it holds the
+   * state, answers the Unit Toggle by converting the figures already on the card, and
+   * fills the place field. The second half is appended only when the card is allowed
+   * to read, and is the only part that knows what a request is - so a card with `live`
+   * off ships a working toggle and not one line of networking.
    *
-   * Failure is never rendered as an error: the sample reading already painted by
-   * `markup` stands, which is what keeps the gallery tile, the landing collage and a
-   * downloaded file honest with no network at all.
+   * Failure is never rendered as an error. Every dead end repaints the sample reading
+   * and says so in the caption, which is what keeps the gallery tile, the landing
+   * collage and a downloaded file honest with no provider reachable.
    */
   script: (p) => {
-    if (p.live !== true) return ''
-    const units = String(p.units) === 'c' ? 'c' : 'f'
-    return dedent(`
+    const unit = unitOf(p)
+    const sample = {
+      t: Number(p.temp),
+      u: 'f',
+      label: String(p.condition),
+      icon: SKY[String(p.icon)] ? String(p.icon) : 'cloud',
+      days: dayLabels(p).map((label, i) => ({ label, icon: SAMPLE_DAY_SKY[i] })),
+    }
+
+    const core = `
+      var card = root.querySelector('.wg-weather__card');
+      var out = root.querySelector('.wg-weather__temp');
+      var note = root.querySelector('[data-status]');
+      var field = root.querySelector('[data-place]');
+      var units = root.querySelectorAll('[data-unit]');
       var CITY = ${jsLit(String(p.city).trim())};
-      var UNITS = ${jsLit(units)};
-      var OTHER = ${jsLit(units === 'c' ? 'f' : 'c')};
-      /* Ten minutes. One reading per city per unit is plenty for a card you glance at,
-         and it keeps a studio knob-turn from hammering a free public endpoint. */
-      var TTL = 600000;
+      var UNIT = ${jsLit(unit)};
+      var SAMPLE = ${jsLit(sample)};
+      /* The reading currently on the card, in the unit it was measured in. */
+      var shown = SAMPLE;
+      var offs = [];
+      var dead = false;
+
+      function inUnit(d, u) {
+        if (d.u === u) return d;
+        return {
+          t: u === 'c' ? (d.t - 32) * 5 / 9 : d.t * 9 / 5 + 32,
+          u: u, label: d.label, icon: d.icon, days: d.days
+        };
+      }
+
+      function readout() {
+        var d = inUnit(shown, UNIT);
+        if (out) out.textContent = Math.round(d.t) + '\\u00b0' + UNIT.toUpperCase();
+      }
+
+      function state(name, caption) {
+        if (card) card.setAttribute('data-state', name);
+        if (note) note.textContent = caption;
+      }
+
+      /* The toggle answers in every state because it never asks for anything: it
+         re-reads the figure already on the card in the other unit. */
+      function pick(u) {
+        UNIT = u;
+        for (var i = 0; i < units.length; i++) {
+          var on = units[i].getAttribute('data-unit') === u;
+          units[i].classList.toggle('is-on', on);
+          units[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+        readout();
+      }
+
+      function onUnit(e) { pick(e.currentTarget.getAttribute('data-unit')); }
+
+      for (var u = 0; u < units.length; u++) {
+        (function (btn) {
+          btn.addEventListener('click', onUnit);
+          offs.push(function () { btn.removeEventListener('click', onUnit); });
+        })(units[u]);
+      }
+
+      /* The typed city is the one value on this card that comes from outside it, and
+         it ends up in a URL. Cap it here as well as on the studio control. */
+      if (field) {
+        field.maxLength = 64;
+        field.value = CITY;
+      }
+    `
+
+    const live = `
       var SUN = ${jsLit(SUN_DOT)};
       var SKY = ${jsLit(SKY)};
       var WMO = ${jsLit(WMO)};
       var DAY = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+      /* Ten minutes. One reading per city per unit is plenty for a card you glance at,
+         and it keeps a studio knob-turn from hammering a free public endpoint. */
+      var TTL = 600000;
 
       /* The cache hangs off the window, not this closure: the studio re-runs this whole
          body on every knob turn, so a closure-held cache would die on each edit and the
          unit toggle would go back to the network for figures it already has. */
       var scope = (root.ownerDocument && root.ownerDocument.defaultView) || root;
       var store = scope.__wgWeatherCache || (scope.__wgWeatherCache = {});
-      var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-      var dead = false;
+      var ctrl = null;
+      /* Every read carries a number. A reply from an older one is ignored, so a second
+         city typed mid-flight can never be answered by the first. */
+      var gen = 0;
 
       function key(unit) { return CITY.toLowerCase() + '|' + unit; }
       function num(v) { return typeof v === 'number' && isFinite(v); }
-      function read(code) { return WMO[code] || ['Cloudy', 'cloud']; }
+      function sky(code) { return WMO[code] || ['Cloudy', 'cloud']; }
+      function other(d) { return inUnit(d, d.u === 'c' ? 'f' : 'c'); }
+      function put(d) { store[key(d.u)] = { at: Date.now(), data: d }; }
 
       function paint(d) {
-        var temp = root.querySelector('.wg-weather__temp');
-        if (temp) temp.textContent = Math.round(d.t) + '°' + d.u.toUpperCase();
+        shown = d;
+        readout();
         var cond = root.querySelector('.wg-weather__condition');
         if (cond) cond.textContent = d.label;
         var glyph = root.querySelector('.wg-weather__glyph');
@@ -234,74 +591,116 @@ export const weather: WidgetSpec = {
         }
       }
 
+      function ago(at) {
+        var mins = Math.round((Date.now() - at) / 60000);
+        return 'Cached \\u00b7 ' + (mins < 1 ? 'just now' : mins + ' min ago');
+      }
+
+      /* Every dead end lands here: the card goes back to the sample reading and says
+         so, rather than rendering an error in its own place. */
+      function offline() {
+        paint(SAMPLE);
+        state('no-data', ${jsLit(CAPTION.offline)});
+      }
+
       /* Everything past this point came off the wire, so nothing is believed until it
          has been checked. A response that does not carry a finite temperature is no
-         reading at all and the sample stays. */
+         reading at all and the sample stands. */
       function shape(fc) {
         if (!fc || !fc.current || !fc.daily) return null;
         if (!num(fc.current.temperature_2m)) return null;
-        var now = read(fc.current.weather_code);
+        var now = sky(fc.current.weather_code);
         var times = fc.daily.time || [];
         var codes = fc.daily.weather_code || [];
         var days = [];
         for (var i = 1; i < times.length; i++) {
           var when = new Date(times[i] + 'T00:00:00Z');
           if (isNaN(when.getTime())) continue;
-          days.push({ label: DAY[when.getUTCDay()], icon: read(codes[i])[1] });
+          days.push({ label: DAY[when.getUTCDay()], icon: sky(codes[i])[1] });
         }
-        return { t: fc.current.temperature_2m, u: UNITS, label: now[0], icon: now[1], days: days };
+        return { t: fc.current.temperature_2m, u: UNIT, label: now[0], icon: now[1], days: days };
       }
 
-      /* One reading fills both unit slots. The toggle re-reads figures already on the
-         card rather than waiting on a new request. */
-      function convert(d, to) {
-        return {
-          t: to === 'c' ? (d.t - 32) * 5 / 9 : d.t * 9 / 5 + 32,
-          u: to, label: d.label, icon: d.icon, days: d.days
-        };
-      }
-
-      function put(d) { store[key(d.u)] = { at: Date.now(), data: d }; }
-
-      function get(url) {
-        return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (res) {
+      function get(url, signal) {
+        return fetch(url, signal ? { signal: signal } : undefined).then(function (res) {
           if (!res || !res.ok) return Promise.reject(new Error('weather: request refused'));
           return res.json();
         });
       }
 
-      function load() {
-        return get('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(CITY))
+      function load(mine, signal) {
+        return get('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(CITY), signal)
           .then(function (geo) {
-            var place = geo && geo.results && geo.results[0];
-            /* No such place, or the widget was disposed while we waited: either way,
-               do not open a second request. */
-            if (dead || !place || !num(place.latitude) || !num(place.longitude)) return;
-            return get('https://api.open-meteo.com/v1/forecast?current=temperature_2m,weather_code&daily=weather_code&timezone=auto&forecast_days=7&temperature_unit=' + (UNITS === 'c' ? 'celsius' : 'fahrenheit') + '&latitude=' + place.latitude + '&longitude=' + place.longitude)
+            if (dead || mine !== gen) return;
+            var spot = geo && geo.results && geo.results[0];
+            /* No such place: stop here rather than opening a second request for it. */
+            if (!spot || !num(spot.latitude) || !num(spot.longitude)) { offline(); return; }
+            return get('https://api.open-meteo.com/v1/forecast?current=temperature_2m,weather_code&daily=weather_code&timezone=auto&forecast_days=7&temperature_unit=' + (UNIT === 'c' ? 'celsius' : 'fahrenheit') + '&latitude=' + spot.latitude + '&longitude=' + spot.longitude, signal)
               .then(function (fc) {
+                if (dead || mine !== gen) return;
                 var d = shape(fc);
-                if (!d) return;
+                if (!d) { offline(); return; }
+                /* One reading fills both unit slots, so the toggle costs no request. */
                 put(d);
-                put(convert(d, OTHER));
-                if (!dead) paint(d);
+                put(other(d));
+                paint(d);
+                state('live', '');
               });
           });
       }
 
-      var hit = CITY ? store[key(UNITS)] : null;
-      if (hit && Date.now() - hit.at < TTL) paint(hit.data);
-      else if (CITY && typeof fetch === 'function') {
-        load().catch(function () {
-          /* Silent on purpose. The card never renders an error in place of itself; the
-             sample reading already on screen is the answer. */
+      function read() {
+        var mine = ++gen;
+        if (ctrl) ctrl.abort();
+        ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        var signal = ctrl ? ctrl.signal : undefined;
+        var hit = CITY ? store[key(UNIT)] : null;
+        if (hit && Date.now() - hit.at < TTL) {
+          paint(hit.data);
+          state('stale', ago(hit.at));
+          return;
+        }
+        state('loading', ${jsLit(CAPTION.loading)});
+        if (!CITY || typeof fetch !== 'function') { offline(); return; }
+        load(mine, signal).catch(function () {
+          if (!dead && mine === gen) offline();
         });
       }
 
+      function search() {
+        var next = (field.value || '').trim();
+        if (!next) { field.value = CITY; return; }
+        if (next.toLowerCase() === CITY.toLowerCase()) return;
+        CITY = next;
+        read();
+      }
+
+      function onKey(e) {
+        if (e.key === 'Enter') { e.preventDefault(); search(); }
+      }
+
+      if (field) {
+        field.readOnly = false;
+        field.addEventListener('change', search);
+        field.addEventListener('keydown', onKey);
+        offs.push(function () {
+          field.removeEventListener('change', search);
+          field.removeEventListener('keydown', onKey);
+        });
+      }
+
+      offs.push(function () { if (ctrl) ctrl.abort(); });
+      read();
+    `
+
+    const close = `
       return function () {
         dead = true;
-        if (ctrl) ctrl.abort();
+        for (var o = 0; o < offs.length; o++) offs[o]();
       };
-    `)
+    `
+
+    return dedent(core) + (asking(p) ? '\n' + dedent(live) : '') + '\n' + dedent(close)
   },
 }
 
