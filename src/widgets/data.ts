@@ -82,7 +82,7 @@ const UNIT_LABEL: [string, string][] = [
 const CAPTION = {
   loading: 'Checking the sky…',
   sample: 'Sample reading',
-  offline: 'Offline — showing a sample reading',
+  offline: 'No reading available — showing a sample',
 }
 
 function unitOf(p: Props): 'f' | 'c' {
@@ -183,7 +183,11 @@ export const weather: WidgetSpec = {
     '--wg-ink': String(p.ink),
     '--wg-accent': String(p.accent),
     /* typography */
-    '--wg-font': 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+    /* Unquoted on purpose. Every token value is written into an HTML attribute by the
+       Svelte and Vue targets, so a quote here would close that attribute and drop the
+       rest of the token layer on the floor. A multi-word family name is legal CSS
+       unquoted, so the card asks for nothing it has to quote. */
+    '--wg-font': 'ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif',
     '--wg-text-xs': '10px',
     '--wg-text-sm': '12px',
     '--wg-text-md': '13px',
@@ -227,10 +231,15 @@ export const weather: WidgetSpec = {
    *
    * The place field ships read-only and the script unlocks it, so a card with no
    * script still names its place and never offers a search it cannot run.
+   *
+   * The painted state is always `no-data`, because that is the truth about markup on
+   * its own: the figures in it are the sample ones. A live script moves the card to
+   * `loading` on the same tick it mounts, and the export targets that ship no script
+   * at all are left in the one state that needs none to be honest - rather than frozen
+   * forever in a skeleton that only a script could have lifted.
    */
   markup: (p) => {
     const unit = unitOf(p)
-    const live = asking(p)
     const glyph = SKY[String(p.icon)] ?? SKY.cloud
     const units = UNIT_LABEL.map(
       ([u, label]) =>
@@ -248,7 +257,7 @@ export const weather: WidgetSpec = {
       )
       .join('\n        ')
     return dedent(`
-      <div class="wg-weather__card" data-state="${live ? 'loading' : 'no-data'}">
+      <div class="wg-weather__card" data-state="no-data">
         <div class="wg-weather__bar">
           <input class="wg-weather__place" type="text" data-place readonly
                  value="${esc(String(p.city).trim())}" placeholder="Search a city" aria-label="City" />
@@ -269,7 +278,7 @@ export const weather: WidgetSpec = {
         <div class="wg-weather__strip">
           ${days}
         </div>
-        <p class="wg-weather__status" data-status aria-live="polite">${live ? CAPTION.loading : CAPTION.sample}</p>
+        <p class="wg-weather__status" data-status aria-live="polite">${CAPTION.sample}</p>
       </div>
     `)
   },
@@ -555,6 +564,12 @@ export const weather: WidgetSpec = {
       /* Ten minutes. One reading per city per unit is plenty for a card you glance at,
          and it keeps a studio knob-turn from hammering a free public endpoint. */
       var TTL = 600000;
+      /* The studio re-runs this body on every keystroke in the City field, and each run
+         is a fresh mount with a fresh cache key. Without this pause, typing eight
+         characters would open sixteen requests, one pair per prefix. The read is held
+         for this long and the disposer cancels it, so only the name still standing when
+         the typing stops is ever asked for. */
+      var SETTLE = 400;
 
       /* The cache hangs off the window, not this closure: the studio re-runs this whole
          body on every knob turn, so a closure-held cache would die on each edit and the
@@ -562,15 +577,30 @@ export const weather: WidgetSpec = {
       var scope = (root.ownerDocument && root.ownerDocument.defaultView) || root;
       var store = scope.__wgWeatherCache || (scope.__wgWeatherCache = {});
       var ctrl = null;
+      var pending = null;
       /* Every read carries a number. A reply from an older one is ignored, so a second
          city typed mid-flight can never be answered by the first. */
       var gen = 0;
 
       function key(unit) { return CITY.toLowerCase() + '|' + unit; }
       function num(v) { return typeof v === 'number' && isFinite(v); }
-      function sky(code) { return WMO[code] || ['Cloudy', 'cloud']; }
+      /* The code came off the wire, so it is only ever used as a number: a string key
+         would reach Object.prototype and hand back something that is not a reading. */
+      function sky(code) {
+        var hit = num(code) ? WMO[code] : null;
+        return hit && hit.length === 2 ? hit : ['Cloudy', 'cloud'];
+      }
       function other(d) { return inUnit(d, d.u === 'c' ? 'f' : 'c'); }
-      function put(d) { store[key(d.u)] = { at: Date.now(), data: d }; }
+      /* Writing also sweeps. The store hangs off the window and is keyed by whatever
+         was typed, so without this every abandoned prefix would sit there for the life
+         of the tab. An entry past the window is unusable anyway. */
+      function put(d) {
+        var now = Date.now();
+        for (var k in store) {
+          if (Object.prototype.hasOwnProperty.call(store, k) && now - store[k].at >= TTL) delete store[k];
+        }
+        store[key(d.u)] = { at: now, data: d };
+      }
 
       function paint(d) {
         shown = d;
@@ -606,7 +636,7 @@ export const weather: WidgetSpec = {
       /* Everything past this point came off the wire, so nothing is believed until it
          has been checked. A response that does not carry a finite temperature is no
          reading at all and the sample stands. */
-      function shape(fc) {
+      function shape(fc, u) {
         if (!fc || !fc.current || !fc.daily) return null;
         if (!num(fc.current.temperature_2m)) return null;
         var now = sky(fc.current.weather_code);
@@ -618,7 +648,11 @@ export const weather: WidgetSpec = {
           if (isNaN(when.getTime())) continue;
           days.push({ label: DAY[when.getUTCDay()], icon: sky(codes[i])[1] });
         }
-        return { t: fc.current.temperature_2m, u: UNIT, label: now[0], icon: now[1], days: days };
+        /* The strip is three Day Cells wide in every state. A payload that cannot fill
+           them is not a reading: painting it would leave sample days standing beside a
+           measured temperature, which is the one thing the card must never do. */
+        if (days.length < 3) return null;
+        return { t: fc.current.temperature_2m, u: u, label: now[0], icon: now[1], days: days };
       }
 
       function get(url, signal) {
@@ -635,10 +669,14 @@ export const weather: WidgetSpec = {
             var spot = geo && geo.results && geo.results[0];
             /* No such place: stop here rather than opening a second request for it. */
             if (!spot || !num(spot.latitude) || !num(spot.longitude)) { offline(); return; }
-            return get('https://api.open-meteo.com/v1/forecast?current=temperature_2m,weather_code&daily=weather_code&timezone=auto&forecast_days=7&temperature_unit=' + (UNIT === 'c' ? 'celsius' : 'fahrenheit') + '&latitude=' + spot.latitude + '&longitude=' + spot.longitude, signal)
+            /* The unit is fixed here, at the moment the URL is built, and travels with
+               the reply. The toggle may flip while the request is in flight; a reading
+               asked for in Fahrenheit must not come back labelled Celsius. */
+            var want = UNIT;
+            return get('https://api.open-meteo.com/v1/forecast?current=temperature_2m,weather_code&daily=weather_code&timezone=auto&forecast_days=7&temperature_unit=' + (want === 'c' ? 'celsius' : 'fahrenheit') + '&latitude=' + spot.latitude + '&longitude=' + spot.longitude, signal)
               .then(function (fc) {
                 if (dead || mine !== gen) return;
-                var d = shape(fc);
+                var d = shape(fc, want);
                 if (!d) { offline(); return; }
                 /* One reading fills both unit slots, so the toggle costs no request. */
                 put(d);
@@ -652,25 +690,34 @@ export const weather: WidgetSpec = {
       function read() {
         var mine = ++gen;
         if (ctrl) ctrl.abort();
-        ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-        var signal = ctrl ? ctrl.signal : undefined;
+        if (pending) { clearTimeout(pending); pending = null; }
         var hit = CITY ? store[key(UNIT)] : null;
         if (hit && Date.now() - hit.at < TTL) {
           paint(hit.data);
           state('stale', ago(hit.at));
           return;
         }
+        /* The card says it is reading straight away - the pause below is about not
+           asking twice for a half-typed name, not about hiding that a read is due. */
         state('loading', ${jsLit(CAPTION.loading)});
         if (!CITY || typeof fetch !== 'function') { offline(); return; }
-        load(mine, signal).catch(function () {
-          if (!dead && mine === gen) offline();
-        });
+        pending = setTimeout(function () {
+          pending = null;
+          if (dead || mine !== gen) return;
+          ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+          load(mine, ctrl ? ctrl.signal : undefined).catch(function () {
+            if (!dead && mine === gen) offline();
+          });
+        }, SETTLE);
       }
 
       function search() {
         var next = (field.value || '').trim();
         if (!next) { field.value = CITY; return; }
-        if (next.toLowerCase() === CITY.toLowerCase()) return;
+        /* Re-submitting the name already on the card is normally a no-op. After a dead
+           end it is the only retry the reader has, so it is honoured there. */
+        var stuck = card && card.getAttribute('data-state') === 'no-data';
+        if (!stuck && next.toLowerCase() === CITY.toLowerCase()) return;
         CITY = next;
         read();
       }
@@ -689,7 +736,10 @@ export const weather: WidgetSpec = {
         });
       }
 
-      offs.push(function () { if (ctrl) ctrl.abort(); });
+      offs.push(function () {
+        if (pending) clearTimeout(pending);
+        if (ctrl) ctrl.abort();
+      });
       read();
     `
 

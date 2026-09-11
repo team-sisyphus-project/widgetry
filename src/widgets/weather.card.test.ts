@@ -57,7 +57,16 @@ function liveRoute(temperature: number) {
 /** A request that never answers: the card is left in whatever state asking put it in. */
 const pending = () => new Promise<unknown>(() => {})
 
+/**
+ * Let the card finish reading. The network leg is held behind a short settle window so
+ * a half-typed city is never asked for, so this runs the clock past that window and
+ * then flushes the promise chain the request hangs off. Time really does pass here: a
+ * reading lands `SETTLE` ms after the mount that asked for it.
+ */
+const SETTLE = 400
 async function settle(): Promise<void> {
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  await vi.advanceTimersByTimeAsync(SETTLE)
   for (let i = 0; i < 20; i++) await Promise.resolve()
 }
 
@@ -211,13 +220,13 @@ describe('forecast card — the four data states', () => {
     expect(temp()).toBe('61°F')
   })
 
-  it('falls back to the sample and says it is offline rather than showing an error', async () => {
+  it('falls back to the sample and says so, rather than showing an error', async () => {
     route = () => Promise.reject(new Error('offline'))
     open({ city: freshCity() })
     await settle()
 
     expect(state()).toBe('no-data')
-    expect(caption()).toBe('Offline — showing a sample reading')
+    expect(caption()).toBe('No reading available — showing a sample')
     expect(temp()).toBe('79°F')
     expect(host.textContent).not.toMatch(/error/i)
   })
@@ -385,7 +394,7 @@ describe('forecast card — everything visible is a token', () => {
     expect(vars['--wg-loop-breathe']).toBe('1.8s')
   })
 
-  it('writes no literal design value into the stylesheet', () => {
+  it('writes no literal colour, type, corner, opacity or duration into the stylesheet', () => {
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i)
     expect(css).not.toMatch(/opacity: (?!var\()/)
     expect(css).not.toMatch(/font-size: (?!var\()/)
@@ -394,6 +403,16 @@ describe('forecast card — everything visible is a token', () => {
     expect(css).not.toMatch(/border-radius: (?!var\()/)
     // Durations, too: nothing in the sheet decides how long a thing takes.
     expect(css).not.toMatch(/:[^;{}]*\b\d*\.?\d+m?s\b/)
+  })
+
+  it('leaves only the card\'s own dimensions literal, and names them', () => {
+    // Widths, heights and transform distances are frame dimensions, which the Design
+    // Spec's convention puts outside the token layer. Pinning the whole set here means
+    // a new literal cannot be added quietly under cover of that exemption.
+    const literals = [...css.matchAll(/(?:width|height|transform)[^;{}]*?(\d+(?:\.\d+)?)px/g)]
+      .map((m) => Number(m[1]))
+      .sort((a, b) => a - b)
+    expect(literals).toEqual([4, 30, 30, 74, 74, 360])
   })
 
   it('leaves no token dangling — every var it reads, it or `vars` declares', () => {
@@ -425,8 +444,11 @@ describe('forecast card — everything visible is a token', () => {
   })
 
   it('honours a request for reduced motion', () => {
-    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))
-    expect(reduced).toBeTruthy()
+    const at = css.indexOf('@media (prefers-reduced-motion: reduce)')
+    // Guarded rather than sliced blind: `slice(-1)` on a missing block is one truthy
+    // character, which would let the block be deleted with this assertion still green.
+    expect(at).toBeGreaterThan(-1)
+    const reduced = css.slice(at)
     expect(css).toContain('animation: wg-weather-drift')
     expect(css).toContain('animation: wg-weather-breathe')
     // Both loops, and every transition the card declares, are switched off.

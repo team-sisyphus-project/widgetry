@@ -87,8 +87,16 @@ function liveRoute(temperature: number, code = 0) {
   return (url: string) => (GEOCODE.test(url) ? ok(place()) : ok(forecast(temperature, code)))
 }
 
-/** Let every pending promise chain settle. The widget schedules no timers of its own. */
+/**
+ * Let the card finish reading. The network leg is held behind a short settle window so
+ * a half-typed city is never asked for, so this runs the clock past that window and
+ * then flushes the promise chain the request hangs off. Time really does pass here: a
+ * reading lands `SETTLE` ms after the mount that asked for it.
+ */
+const SETTLE = 400
 async function settle(): Promise<void> {
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  await vi.advanceTimersByTimeAsync(SETTLE)
   for (let i = 0; i < 20; i++) await Promise.resolve()
 }
 
@@ -97,6 +105,10 @@ function open(overrides: Record<string, ControlValue>): void {
   dispose = mount(host, spec, { ...defaultProps(spec), ...overrides })
 }
 
+const field = () => host.querySelector<HTMLInputElement>('[data-place]')!
+const stateOf = () => host.querySelector('.wg-weather__card')!.getAttribute('data-state')
+const store = () =>
+  (window as unknown as { __wgWeatherCache?: Record<string, { at: number }> }).__wgWeatherCache ?? {}
 const temp = () => host.querySelector('.wg-weather__temp')!.textContent
 const condition = () => host.querySelector('.wg-weather__condition')!.textContent
 const dayLabels = () =>
@@ -188,7 +200,8 @@ describe('forecast card — the ten minute cache', () => {
 
     calls = []
     route = liveRoute(48)
-    vi.setSystemTime(BASE + TTL + 1)
+    // The first reading landed SETTLE ms after its mount, which is when it was cached.
+    vi.setSystemTime(BASE + SETTLE + TTL + 1)
     open({ city, units: 'f' })
     await settle()
 
@@ -211,6 +224,31 @@ describe('forecast card — the ten minute cache', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('a unit flipped mid-flight cannot relabel the reading that was asked for', async () => {
+    // The forecast URL fixes the unit; the reply carries no unit of its own. If the
+    // toggle moves between the two, the figure must keep the unit it was measured in.
+    let land: (body: unknown) => void = () => {}
+    route = (url) =>
+      GEOCODE.test(url)
+        ? ok(place())
+        : new Promise((resolve) => {
+            land = (body) => resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
+          })
+
+    open({ city: freshCity(), units: 'f' })
+    await settle()
+    const asked = calls.find((c) => FORECAST.test(c.url))!
+    expect(asked.url).toContain('temperature_unit=fahrenheit')
+
+    // Reader flips to °C while the Fahrenheit reading is still on the wire.
+    host.querySelector<HTMLButtonElement>('[data-unit="c"]')!.click()
+    land(forecast(61))
+    await settle()
+
+    // 61°F, shown in °C — not 61 relabelled. (61 - 32) * 5/9 = 16.1
+    expect(temp()).toBe('16°C')
+  })
+
   it('a different city is a different reading', async () => {
     open({ city: freshCity(), units: 'f' })
     await settle()
@@ -222,6 +260,45 @@ describe('forecast card — the ten minute cache', () => {
 
     expect(requests(FORECAST)).toBe(1)
     expect(temp()).toBe('90°F')
+  })
+})
+
+describe('forecast card — typing a city is one reading, not one per letter', () => {
+  it('asks once for the name that was typed, not once per keystroke', async () => {
+    // The studio fires onChange per character and remounts the widget each time, so
+    // the card sees a fresh mount for every prefix of the name.
+    const city = freshCity()
+    for (let i = 1; i <= city.length; i++) {
+      open({ city: city.slice(0, i), units: 'f' })
+      await Promise.resolve()
+      vi.advanceTimersByTime(20) // roughly a fast typist, well inside the settle window
+    }
+    await settle()
+
+    expect(city.length).toBeGreaterThan(8)
+    expect(requests(GEOCODE)).toBe(1)
+    expect(requests(FORECAST)).toBe(1)
+    expect(temp()).toBe('61°F')
+  })
+
+  it('says it is reading straight away, without waiting out the settle window', () => {
+    open({ city: freshCity(), units: 'f' })
+
+    expect(stateOf()).toBe('loading')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('drops readings it can no longer use rather than growing without bound', async () => {
+    const abandoned = freshCity()
+    open({ city: abandoned, units: 'f' })
+    await settle()
+    expect(Object.keys(store())).toContain(`${abandoned.toLowerCase()}|f`)
+
+    vi.setSystemTime(BASE + SETTLE + TTL + 1)
+    open({ city: freshCity(), units: 'f' })
+    await settle()
+
+    expect(Object.keys(store())).not.toContain(`${abandoned.toLowerCase()}|f`)
   })
 })
 
@@ -262,6 +339,40 @@ describe('forecast card — a card that cannot read never shows an error', () =>
     expect(requests(FORECAST)).toBe(0)
   })
 
+  it('keeps the sample reading when the outlook cannot fill the strip', async () => {
+    // Two days back for a three cell strip. Painting it would stand a measured
+    // temperature next to two sample day labels.
+    route = (url) =>
+      GEOCODE.test(url)
+        ? ok(place())
+        : ok({
+            current: { temperature_2m: 61, weather_code: 0 },
+            daily: { time: ['2026-09-11', '2026-09-12'], weather_code: [0, 0] },
+          })
+    open({ city: freshCity(), units: 'f' })
+    await settle()
+
+    expectSampleStanding()
+    expect(host.querySelector('.wg-weather__card')!.getAttribute('data-state')).toBe('no-data')
+  })
+
+  it('does not read a weather code off the object prototype', async () => {
+    // A hostile or broken provider answering with a string code must not turn
+    // `WMO[code]` into `Object.prototype.constructor`.
+    route = (url) =>
+      GEOCODE.test(url)
+        ? ok(place())
+        : ok({
+            current: { temperature_2m: 61, weather_code: 'constructor' },
+            daily: { time: DAYS, weather_code: ['constructor', 0, 0, 0, 0, 0, 0] },
+          })
+    open({ city: freshCity(), units: 'f' })
+    await settle()
+
+    expect(temp()).toBe('61°F')
+    expect(condition()).toBe('Cloudy')
+  })
+
   it('keeps the sample reading when the payload carries no temperature', async () => {
     route = (url) =>
       GEOCODE.test(url) ? ok(place()) : ok({ current: { temperature_2m: null }, daily: {} })
@@ -269,6 +380,25 @@ describe('forecast card — a card that cannot read never shows an error', () =>
     await settle()
 
     expectSampleStanding()
+  })
+
+  it('reads again when the reader re-submits the city it failed on', async () => {
+    route = () => Promise.reject(new Error('offline'))
+    const city = freshCity()
+    open({ city, units: 'f' })
+    await settle()
+    expect(stateOf()).toBe('no-data')
+
+    // The name is unchanged, which is normally a no-op. Here it is the only retry
+    // the reader has.
+    calls = []
+    route = liveRoute(61)
+    field().dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    expect(requests(FORECAST)).toBe(1)
+    expect(stateOf()).toBe('live')
+    expect(temp()).toBe('61°F')
   })
 
   it('asks for nothing when live is off, and ships no networking to export', async () => {

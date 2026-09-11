@@ -64,6 +64,8 @@ conditions and the three day outlook. That is the whole of its network use.
   as dependency free as every other one.
 - One reading per city per unit is cached for ten minutes, and a single reading fills
   both the °C and the °F slot, so flipping the unit costs no request.
+- A city typed into the card is read once, when the typing stops - not once per
+  keystroke. The card says it is reading straight away either way.
 - The only value that leaves the page is the city name, and only to the provider.
 - A failed request, a refused one, an unknown place or no network at all leaves the
   card showing the sample reading it was painted with, and saying so in its caption.
