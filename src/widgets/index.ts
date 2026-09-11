@@ -4,6 +4,7 @@ import { battery, brightness, toggle, compass, signal } from './system'
 import { player, waveform, recordbutton } from './media'
 import { weather, waterwave, wallet, contactCard } from './data'
 import { checklist, habitStreak, sleepmode } from './life'
+import { poll } from './poll'
 
 export const WIDGETS: WidgetSpec[] = [
   clock,
@@ -24,6 +25,7 @@ export const WIDGETS: WidgetSpec[] = [
   countdown,
   signal,
   recordbutton,
+  poll,
 ]
 
 export const WIDGET_BY_ID = new Map(WIDGETS.map((w) => [w.id, w]))
