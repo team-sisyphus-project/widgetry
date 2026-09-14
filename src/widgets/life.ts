@@ -1,5 +1,14 @@
-import type { WidgetSpec } from '../lib/types'
+import type { Props, WidgetSpec } from '../lib/types'
 import { dedent, esc } from '../lib/util'
+import type { Quote, QuoteCollectionId } from './quotes'
+import {
+  DEFAULT_QUOTE_COLLECTION_ID,
+  QUOTE_COLLECTIONS,
+  QUOTE_COLLECTION_IDS,
+  dayNumber,
+  isQuoteCollectionId,
+  pickAt,
+} from './quotes'
 
 export const checklist: WidgetSpec = {
   id: 'checklist',
@@ -374,4 +383,295 @@ export const sleepmode: WidgetSpec = {
     btn.addEventListener('click', flip);
     return function () { btn.removeEventListener('click', flip); };
   `),
+}
+
+/**
+ * The quote card's design values, bound once as custom properties so no rule
+ * below carries a literal. Each name mirrors a Token in the project Design
+ * Spec, which is what lets an audit diff the two by grep rather than by eye.
+ * Bindings a control owns (`--wg-bg`, `--wg-ink`, `--wg-accent`) are emitted by
+ * `vars()` instead, so the studio can move them.
+ */
+const QUOTE_CARD_TOKENS = dedent(`
+  --wg-text-family-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --wg-text-size-display: 34px;
+  --wg-text-size-md: 15px;
+  --wg-text-size-xs: 12px;
+  --wg-text-size-2xs: 11px;
+  --wg-text-weight-base: 500;
+  --wg-text-weight-strong: 600;
+  --wg-text-leading-solid: 1;
+  --wg-text-leading-body: 1.3;
+  --wg-text-tracking-tight: -.02em;
+  --wg-text-tracking-caps: .16em;
+  --wg-content-padding-lg: 20px;
+  --wg-stack-gap-md: 16px;
+  --wg-stack-gap-sm: 6px;
+  --wg-inline-gap-sm: 10px;
+  --wg-element-gap-sm: 4px;
+  --wg-control-padding-sm: 6px 10px;
+  --wg-ring-offset: 2px;
+  --wg-radius-card: 22px;
+  --wg-radius-pill: 99px;
+  --wg-icon-size-sm: 11px;
+  --wg-stroke-width-hairline: 2px;
+  --wg-surface-muted: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+  --wg-surface-hover: color-mix(in srgb, var(--wg-ink) 20%, transparent);
+  --wg-ink-primary: 1;
+  --wg-ink-supporting: .7;
+  --wg-ink-quiet: .5;
+  --wg-ink-mark: .45;
+  --wg-ink-hidden: 0;
+  --wg-swap-duration: .25s;
+  --wg-swap-easing: ease;
+  --wg-tint-duration: .3s;
+  --wg-tint-easing: ease;
+`)
+
+/** Re-indent a block so it lands at the right depth inside a `dedent` template. */
+function indentLines(block: string, pad: number): string {
+  const prefix = ' '.repeat(pad)
+  return block
+    .split('\n')
+    .map((l) => (l.trim() ? prefix + l : l))
+    .join('\n')
+}
+
+/** Whichever collection the select holds, narrowed; an unknown value falls back. */
+function quoteCollectionOf(p: Props): QuoteCollectionId {
+  const raw = String(p.collection ?? '')
+  return isQuoteCollectionId(raw) ? raw : DEFAULT_QUOTE_COLLECTION_ID
+}
+
+/**
+ * The collection laid out in cursor order, so `cycle[i]` is `pickAt(id, i)`.
+ *
+ * The emitted script walks this array with `cursor mod n` and ships no seed
+ * arithmetic of its own. That keeps the downloaded file readable and keeps the
+ * permutation in one place — quotes.ts — where it is already under test.
+ */
+function quoteCycle(id: QuoteCollectionId): Quote[] {
+  return QUOTE_COLLECTIONS[id].quotes.map((_, i) => pickAt(id, i))
+}
+
+/**
+ * The cursor a pinned date maps to, or `null` when the control is blank or
+ * holds something that is not a calendar date. `null` means "the reader's own
+ * today", which only the mounted script can know.
+ */
+function quoteDateCursor(p: Props): number | null {
+  const raw = String(p.date ?? '').trim()
+  if (!raw) return null
+  try {
+    return dayNumber(raw)
+  } catch {
+    return null
+  }
+}
+
+export const quoteCard: WidgetSpec = {
+  id: 'quote-card',
+  name: 'Daily Quote',
+  category: 'life',
+  blurb: 'A bundled quote that changes with the date, and a shuffle for another one now.',
+  tags: ['quote', 'daily', 'life'],
+  frame: { w: 300, h: 240 },
+  interactive: true,
+  controls: [
+    {
+      key: 'collection',
+      label: 'Collection',
+      type: 'select',
+      default: DEFAULT_QUOTE_COLLECTION_ID,
+      options: QUOTE_COLLECTION_IDS.map((id) => ({ value: id, label: QUOTE_COLLECTIONS[id].label })),
+    },
+    { key: 'date', label: 'Date (blank = today)', type: 'text', default: '', maxLength: 10 },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Accent', type: 'color', default: '#2f8bff', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+  }),
+  markup: (p) => {
+    const id = quoteCollectionOf(p)
+    const cycle = quoteCycle(id)
+    const cursor = quoteDateCursor(p)
+    // A blank date has no answer that markup alone can give, so it renders the
+    // head of the cycle and the script replaces it on mount, before paint.
+    const shown = cycle[(((cursor ?? 0) % cycle.length) + cycle.length) % cycle.length]
+    return dedent(`
+      <span class="wg-quote-card__mark" aria-hidden="true">“</span>
+      <figure class="wg-quote-card__figure" data-figure aria-live="polite">
+        <blockquote class="wg-quote-card__quote" data-text>${esc(shown.text)}</blockquote>
+        <figcaption class="wg-quote-card__author" data-author>${esc(shown.author)}</figcaption>
+      </figure>
+      <div class="wg-quote-card__foot">
+        <span class="wg-quote-card__collection">${esc(QUOTE_COLLECTIONS[id].label)}</span>
+        <button class="wg-quote-card__shuffle" type="button" data-shuffle aria-label="Show another quote">
+          <svg class="wg-quote-card__icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2 4.5h2.4L11 11.5h2.2"></path>
+            <path d="M2 11.5h2.4L11 4.5h2.2"></path>
+            <path d="M11.6 2.9 14 4.5l-2.4 1.6"></path>
+            <path d="M11.6 9.9 14 11.5l-2.4 1.6"></path>
+          </svg>
+          <span class="wg-quote-card__shuffletext">Shuffle</span>
+        </button>
+      </div>
+    `)
+  },
+  css: () => dedent(`
+    .wg-quote-card {
+${indentLines(QUOTE_CARD_TOKENS, 6)}
+
+      display: flex;
+      flex-direction: column;
+      gap: var(--wg-stack-gap-sm);
+      /* Frame size is a catalogue setting, not a design Token: every widget
+         picks its own and none of them share one. */
+      width: 300px;
+      height: 240px;
+      padding: var(--wg-content-padding-lg);
+      box-sizing: border-box;
+      border-radius: var(--wg-radius-card);
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font-family: var(--wg-text-family-ui);
+      font-size: var(--wg-text-size-md);
+      font-weight: var(--wg-text-weight-base);
+      line-height: var(--wg-text-leading-body);
+    }
+    .wg-quote-card__mark {
+      display: block;
+      font-size: var(--wg-text-size-display);
+      font-weight: var(--wg-text-weight-strong);
+      line-height: var(--wg-text-leading-solid);
+      color: var(--wg-accent);
+      opacity: var(--wg-ink-mark);
+    }
+    .wg-quote-card__figure {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--wg-stack-gap-sm);
+    }
+    .wg-quote-card__quote {
+      margin: 0;
+      font-size: var(--wg-text-size-md);
+      font-weight: var(--wg-text-weight-base);
+      line-height: var(--wg-text-leading-body);
+      letter-spacing: var(--wg-text-tracking-tight);
+      opacity: var(--wg-ink-primary);
+    }
+    .wg-quote-card__author {
+      font-size: var(--wg-text-size-xs);
+      opacity: var(--wg-ink-supporting);
+    }
+    .wg-quote-card__foot {
+      margin-top: auto;
+      padding-top: var(--wg-stack-gap-md);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--wg-inline-gap-sm);
+    }
+    .wg-quote-card__collection {
+      font-size: var(--wg-text-size-2xs);
+      font-weight: var(--wg-text-weight-strong);
+      letter-spacing: var(--wg-text-tracking-caps);
+      text-transform: uppercase;
+      opacity: var(--wg-ink-quiet);
+    }
+    .wg-quote-card__shuffle {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--wg-element-gap-sm);
+      padding: var(--wg-control-padding-sm);
+      border: 0;
+      border-radius: var(--wg-radius-pill);
+      background: var(--wg-surface-muted);
+      color: var(--wg-ink);
+      font-family: inherit;
+      font-size: var(--wg-text-size-2xs);
+      font-weight: var(--wg-text-weight-strong);
+      letter-spacing: var(--wg-text-tracking-caps);
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background var(--wg-tint-duration) var(--wg-tint-easing);
+    }
+    .wg-quote-card__shuffle:hover { background: var(--wg-surface-hover); }
+    .wg-quote-card__shuffle:focus-visible {
+      outline: var(--wg-stroke-width-hairline) solid var(--wg-accent);
+      outline-offset: var(--wg-ring-offset);
+    }
+    .wg-quote-card__icon {
+      display: block;
+      flex: 0 0 auto;
+      width: var(--wg-icon-size-sm);
+      height: var(--wg-icon-size-sm);
+      fill: none;
+      stroke: currentColor;
+      stroke-width: var(--wg-stroke-width-hairline);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    @keyframes wg-quote-card-fade {
+      from { opacity: var(--wg-ink-hidden); }
+      to { opacity: var(--wg-ink-primary); }
+    }
+    .wg-quote-card__figure.is-fresh {
+      animation: wg-quote-card-fade var(--wg-swap-duration) var(--wg-swap-easing) both;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wg-quote-card__figure.is-fresh { animation: none; }
+      .wg-quote-card__shuffle { transition: none; }
+    }
+  `),
+  script: (p) => {
+    const cycle = quoteCycle(quoteCollectionOf(p))
+    const cursor = quoteDateCursor(p)
+    const table = cycle
+      .map((q) => `  [${JSON.stringify(q.text)}, ${JSON.stringify(q.author)}]`)
+      .join(',\n')
+    return (
+      `/* The collection in cursor order: slot is cursor mod length, the whole of\n` +
+      `   the seeded pick. No randomness ships, so this file renders the same\n` +
+      `   quote the studio showed on the same date. */\n` +
+      `var quotes = [\n${table}\n];\n` +
+      dedent(`
+        var pinned = ${cursor === null ? 'null' : String(cursor)};
+        var figure = root.querySelector('[data-figure]');
+        var textEl = root.querySelector('[data-text]');
+        var authorEl = root.querySelector('[data-author]');
+        var btn = root.querySelector('[data-shuffle]');
+        /* Whole days since 1970-01-01 on the reader's own calendar, so the quote
+           turns over at their midnight rather than at UTC's. */
+        function today() {
+          var now = new Date();
+          return Math.floor((now.getTime() - now.getTimezoneOffset() * 60000) / 86400000);
+        }
+        var cursor = pinned === null ? today() : pinned;
+        function show() {
+          var q = quotes[((cursor % quotes.length) + quotes.length) % quotes.length];
+          textEl.textContent = q[0];
+          authorEl.textContent = q[1];
+          root.dispatchEvent(new CustomEvent('wg:change', {
+            detail: { cursor: cursor, text: q[0], author: q[1] }, bubbles: true
+          }));
+        }
+        function next() {
+          cursor += 1;
+          show();
+          figure.classList.remove('is-fresh');
+          void figure.offsetWidth;
+          figure.classList.add('is-fresh');
+        }
+        btn.addEventListener('click', next);
+        show();
+        return function () { btn.removeEventListener('click', next); };
+      `)
+    )
+  },
 }
