@@ -42,6 +42,8 @@ const SR_TIME = /data-sr[^>]*>[\s]*([0-9]{2}:[0-9]{2})/g
 const DIGITAL_TIME = /data-time[^>]*>[\s]*([0-9]{2}:[0-9]{2})/g
 /** The zone id each cell was rendered for. */
 const CELL_ZONE = /data-zone="([^"]+)"/g
+/** The `weekday · GMT±H` line each cell carries under its face. */
+const ZONE_LINE = /data-zone-line>([^<]*)</g
 
 const SIX = 'San Francisco|America/Los_Angeles, New York|America/New_York, London|Europe/London, Berlin|Europe/Berlin, Mumbai|Asia/Kolkata, Seoul|Asia/Seoul'
 
@@ -195,6 +197,73 @@ describe('world-clock renders six cities on both faces (M1)', () => {
     expect(spec.markup({ ...props, face: 'digital' })).not.toContain('data-secs')
   })
 })
+
+describe('world-clock renders a board smaller than the cap', () => {
+  /**
+   * Three cities is the smallest board this widget is asked for, and the shape a
+   * remote team actually opens it with. The six-city checks above cannot stand in
+   * for it: a board that always drew `MAX_CITIES` faces, or that only ever read the
+   * first three of whatever it was handed, would satisfy every one of them.
+   *
+   * Three zones on three continents, no two offsets alike, all clear of a midnight
+   * roll at NOW — so a board quietly driving every face from one clock cannot pass
+   * by coincidence.
+   */
+  const THREE =
+    'San Francisco|America/Los_Angeles, New York|America/New_York, London|Europe/London'
+  const cities = parseCities(THREE)
+
+  it('takes three cities from a control that would accept six', () => {
+    expect(cities.map((c) => c.zone)).toEqual([
+      'America/Los_Angeles',
+      'America/New_York',
+      'Europe/London',
+    ])
+    expect(cities.length).toBeLessThan(MAX_CITIES)
+  })
+
+  it.each(['analog', 'digital'])(
+    'draws exactly those three faces on the %s face, in the order written',
+    (face) => {
+      const html = spec.markup({ ...defaultProps(spec), cities: THREE, face })
+      expect(all(html, CELL_ZONE)).toEqual(cities.map((c) => c.zone))
+      for (const city of cities) expect(html).toContain(`>${city.label}</span>`)
+      // Not padded up to the cap with the control's own default cities.
+      expect(html).not.toContain('Seoul')
+      expect(html).not.toContain('Asia/Kolkata')
+    },
+  )
+
+  it.each(['analog', 'digital'])(
+    'gives each of the three the time the platform reports for its own zone (%s)',
+    (face) => {
+      const html = spec.markup({ ...defaultProps(spec), cities: THREE, face })
+      const expected = cities.map((c) => reference(c.zone, NOW))
+      expect(all(html, face === 'digital' ? DIGITAL_TIME : SR_TIME)).toEqual(expected)
+      // Three zones an hour or more apart: three readings, never one repeated.
+      expect(new Set(expected).size).toBe(3)
+    },
+  )
+
+  it('gives each of the three its own offset line, not the viewer\u2019s', () => {
+    const html = spec.markup({ ...defaultProps(spec), cities: THREE, face: 'digital' })
+    const lines = all(html, ZONE_LINE)
+    expect(lines).toHaveLength(3)
+    expect(lines.map((l) => l.split(' \u00b7 ')[1])).toEqual(['GMT-7', 'GMT-4', 'GMT+1'])
+  })
+
+  it('keeps the three when a fourth entry names a zone it cannot resolve', () => {
+    const html = spec.markup({
+      ...defaultProps(spec),
+      cities: `${THREE}, Nowhere|Mars/Olympus_Mons`,
+      face: 'digital',
+    })
+    expect(all(html, CELL_ZONE)).toEqual(cities.map((c) => c.zone))
+    expect(all(html, DIGITAL_TIME)).toEqual(cities.map((c) => reference(c.zone, NOW)))
+    expect(html).not.toContain('Nowhere')
+  })
+})
+
 
 describe('world-clock working-hours highlight (M3)', () => {
   /** Is the single UTC cell lit at `iso`? */
