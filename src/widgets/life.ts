@@ -1,5 +1,6 @@
 import type { WidgetSpec } from '../lib/types'
 import { dedent, esc } from '../lib/util'
+import { MD_ENTRY, MD_JS } from './markdown'
 
 export const checklist: WidgetSpec = {
   id: 'checklist',
@@ -374,4 +375,285 @@ export const sleepmode: WidgetSpec = {
     btn.addEventListener('click', flip);
     return function () { btn.removeEventListener('click', flip); };
   `),
+}
+
+/* ------------------------------------------------------------ scratchpad ---- */
+
+/**
+ * Placeholder shown in the empty editor. It doubles as the subset's only
+ * documentation inside the widget, which is why it names the syntax rather than
+ * saying "type here".
+ */
+const NOTE_PLACEHOLDER = 'Plain text, plus **bold**, `code`, # headings, - lists.'
+
+/**
+ * What the preview shows when the note is blank. Blank is a normal state, not an
+ * error, so the line states what is there and where the editor is - it does not
+ * apologise. `markup` renders it and the script restores it the moment the editor
+ * is cleared, both from this constant, so the two cannot word it differently.
+ */
+const NOTE_EMPTY =
+  '<p class="wg-scratchpad__empty">Nothing written yet. The Edit button opens the editor.</p>'
+
+/**
+ * A JavaScript string literal that is safe in every place a widget script lands.
+ *
+ * `JSON.stringify` alone is not enough. The html export drops the script body inside
+ * a `<script>` element, where the byte sequence `</script>` inside a string literal
+ * ends the element - so `<` and `>` are escaped numerically. `&` follows for the same
+ * class of reason, and U+2028 / U+2029 because they are literal line terminators in
+ * JavaScript source but not in JSON output. The result is always single-line, which
+ * matters because every export target re-indents the script body line by line
+ * (`indent` in src/lib/export/index.ts); a literal carrying a raw newline would come
+ * back with the indentation baked into its value.
+ */
+function jsString(s: string): string {
+  return JSON.stringify(s)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
+/**
+ * Scratchpad - an editable note with a rendered Markdown preview.
+ *
+ * ## Why the note text is not in `markup`
+ *
+ * Every other widget in this catalogue interpolates its text props into `markup`.
+ * This one deliberately does not: the note reaches the widget through `script` as a
+ * JavaScript string literal, and `markup` ships only the panes, the chrome and the
+ * empty-state line. That is not a style preference, it is forced by the export
+ * targets - the same markup string is pasted into a Svelte component, a Vue
+ * template, a JSX tree and two HTML files, and those four disagree about braces:
+ *
+ * - Svelte reads `{` in markup as the start of an expression. A note containing
+ *   `{ "a": 1 }` would not compile.
+ * - Vue reads `{{` as an interpolation and would try to resolve it against the
+ *   component scope.
+ * - React needs the brace raw so `htmlToJsx` can escape it (`src/lib/export/jsx.ts`).
+ *   Feeding it `&#123;` instead - which is what would keep Svelte and Vue happy -
+ *   makes the React export print the entity literally.
+ *
+ * There is no single string that satisfies all four, and a note is exactly the kind
+ * of text that carries braces. Inside a script body the note is a JS string literal,
+ * which every target treats identically, so that is where it goes. The preview HTML
+ * is then produced at mount by the inlined renderer - one code path, so all five
+ * script-running targets render byte-identical preview HTML by construction rather
+ * than by a promise. It is also the shape grain-4 needs: a restored note is the
+ * visitor's content, and visitor content must never be baked into an export.
+ *
+ * ## The Markdown
+ *
+ * `MD_JS` from ./markdown is inlined verbatim at the top of the script body. That
+ * file is the only implementation - the studio preview compiles the same source
+ * through `new Function` - so there is no second renderer to drift from, and the
+ * escape-first ordering that makes it safe against hostile input travels with it.
+ */
+export const scratchpad: WidgetSpec = {
+  id: 'scratchpad',
+  name: 'Scratchpad',
+  category: 'life',
+  blurb: 'A note you can type into, with a little Markdown rendered as you go.',
+  tags: ['note', 'markdown', 'text'],
+  frame: { w: 280, h: 200 },
+  interactive: true,
+  controls: [
+    { key: 'title', label: 'Title', type: 'text', default: 'Scratchpad', maxLength: 24 },
+    {
+      key: 'text',
+      label: 'Note',
+      type: 'text',
+      default: '**Ship the audit**, then call Dana about `render.ts`.',
+    },
+    {
+      key: 'mode',
+      label: 'Opens in',
+      type: 'select',
+      default: 'preview',
+      options: [
+        { value: 'preview', label: 'Preview' },
+        { value: 'edit', label: 'Editor' },
+      ],
+    },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Accent', type: 'color', default: '#2f8bff', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+    /* Both panes share one grid cell, so this is the card's body height in either
+       mode - switching cannot make the card jump. */
+    '--wg-pane-h': '96px',
+  }),
+  markup: (p) => {
+    const editing = String(p.mode) === 'edit'
+    return dedent(`
+      <div class="wg-scratchpad__head">
+        <span class="wg-scratchpad__title">${esc(String(p.title))}</span>
+        <button type="button" class="wg-scratchpad__edit" data-edit aria-pressed="${editing ? 'true' : 'false'}">Edit</button>
+      </div>
+      <div class="wg-scratchpad__body${editing ? ' is-editing' : ''}" data-body>
+        <div class="wg-scratchpad__preview" data-preview>${NOTE_EMPTY}</div>
+        <textarea class="wg-scratchpad__editor" data-editor aria-label="Note" placeholder="${esc(NOTE_PLACEHOLDER)}"></textarea>
+      </div>
+    `)
+  },
+  css: () => dedent(`
+    .wg-scratchpad {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 240px;
+      padding: 18px;
+      border-radius: 22px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      box-sizing: border-box;
+    }
+    .wg-scratchpad__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .wg-scratchpad__title {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -.02em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .wg-scratchpad__edit {
+      flex: 0 0 auto;
+      padding: 3px 8px;
+      border: 0;
+      border-radius: 99px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      color: var(--wg-ink);
+      font: 600 11px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      opacity: .7;
+      cursor: pointer;
+      transition: background .3s ease, opacity .3s ease;
+    }
+    .wg-scratchpad__edit:hover { background: color-mix(in srgb, var(--wg-ink) 20%, transparent); opacity: 1; }
+    .wg-scratchpad__edit[aria-pressed="true"] { background: var(--wg-accent); opacity: 1; }
+    .wg-scratchpad__edit:focus-visible { outline: 2px solid var(--wg-accent); outline-offset: 2px; }
+
+    /*
+     * Both panes live in one grid cell of a fixed height, which buys two things: the
+     * card cannot change size when they swap, and a long note scrolls inside the pane
+     * instead of stretching the card out of the layout it was dropped into.
+     */
+    .wg-scratchpad__body { display: grid; height: var(--wg-pane-h); }
+    .wg-scratchpad__body > * { grid-area: 1 / 1; }
+    .wg-scratchpad__preview, .wg-scratchpad__editor {
+      transition: opacity .25s ease, visibility .25s ease;
+    }
+    .wg-scratchpad__editor { opacity: 0; visibility: hidden; pointer-events: none; }
+    .wg-scratchpad__body.is-editing .wg-scratchpad__preview { opacity: 0; visibility: hidden; pointer-events: none; }
+    .wg-scratchpad__body.is-editing .wg-scratchpad__editor { opacity: 1; visibility: visible; pointer-events: auto; }
+
+    .wg-scratchpad__preview {
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: break-word;
+    }
+    .wg-scratchpad__preview > :first-child { margin-top: 0; }
+    .wg-scratchpad__preview > :last-child { margin-bottom: 0; }
+    .wg-scratchpad__preview p { margin: 0 0 6px; }
+    .wg-scratchpad__preview h1, .wg-scratchpad__preview h2, .wg-scratchpad__preview h3 {
+      margin: 12px 0 4px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .wg-scratchpad__preview h1 { font-size: 15px; letter-spacing: -.02em; }
+    .wg-scratchpad__preview h2 { font-size: 13px; }
+    .wg-scratchpad__preview h3 { font-size: 12px; opacity: .7; }
+    .wg-scratchpad__preview ul, .wg-scratchpad__preview ol { margin: 0 0 6px; padding-left: 18px; }
+    .wg-scratchpad__preview li { margin: 0 0 4px; }
+    .wg-scratchpad__preview strong { font-weight: 600; }
+    .wg-scratchpad__preview code {
+      padding: 0 4px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .wg-scratchpad__preview a { color: var(--wg-accent); }
+    .wg-scratchpad__empty { margin: 0; opacity: .5; }
+
+    .wg-scratchpad__editor {
+      width: 100%;
+      margin: 0;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      color: var(--wg-ink);
+      font: 500 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      resize: none;
+      box-sizing: border-box;
+    }
+    .wg-scratchpad__editor::placeholder { color: var(--wg-ink); opacity: .35; }
+    .wg-scratchpad__editor:focus-visible { outline: 2px solid var(--wg-accent); outline-offset: 2px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .wg-scratchpad__edit,
+      .wg-scratchpad__preview,
+      .wg-scratchpad__editor { transition: none; }
+    }
+  `),
+  script: (p) =>
+    [
+      MD_JS,
+      dedent(`
+        var seed = ${jsString(String(p.text))};
+        var empty = ${jsString(NOTE_EMPTY)};
+        var body = root.querySelector('[data-body]');
+        var editor = root.querySelector('[data-editor]');
+        var preview = root.querySelector('[data-preview]');
+        var toggle = root.querySelector('[data-edit]');
+
+        /* The only place preview HTML is produced, in the studio and in every export. */
+        function paint() {
+          var text = editor.value;
+          preview.innerHTML = text.trim() ? ${MD_ENTRY}(text) : empty;
+        }
+
+        /* Character count, not the text: the note is the visitor's, and a bubbling
+           event is the one place it could leave the widget without being asked. */
+        function announce() {
+          root.dispatchEvent(new CustomEvent('wg:change', {
+            detail: { chars: editor.value.length, editing: body.classList.contains('is-editing') },
+            bubbles: true
+          }));
+        }
+
+        function type() {
+          paint();
+          announce();
+        }
+
+        function flip() {
+          var on = !body.classList.contains('is-editing');
+          body.classList.toggle('is-editing', on);
+          toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+          if (on) editor.focus();
+          announce();
+        }
+
+        editor.value = seed;
+        paint();
+        editor.addEventListener('input', type);
+        toggle.addEventListener('click', flip);
+        return function () {
+          editor.removeEventListener('input', type);
+          toggle.removeEventListener('click', flip);
+        };
+      `),
+    ].join('\n'),
 }
