@@ -1,4 +1,4 @@
-import type { WidgetSpec } from '../lib/types'
+import type { Props, WidgetSpec } from '../lib/types'
 import { clamp } from '../lib/types'
 import { dedent, esc, repeat } from '../lib/util'
 
@@ -89,7 +89,15 @@ export const clock: WidgetSpec = {
     }
   `),
   script: (p) => dedent(`
-    var smooth = ${p.smooth ? 'true' : 'false'};
+    // The sweeping second hand is a continuous animation, so it answers the same
+    // reduced-motion policy every other animated widget here answers: under
+    // \`prefers-reduced-motion: reduce\` the hand still keeps time, it just steps
+    // once a second instead of running a frame loop.
+    var reduce = false;
+    try {
+      reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) { reduce = false; }
+    var smooth = ${p.smooth ? 'true' : 'false'} && !reduce;
     var hands = {
       hour: root.querySelector('[data-hand="hour"]'),
       minute: root.querySelector('[data-hand="minute"]'),
@@ -639,4 +647,508 @@ export function isWorkingHour(parts: ZonedParts | null, start: number, end: numb
   if (from === null || to === null || from === to) return false
   const now = parts.minutes
   return from < to ? now >= from && now < to : now >= from || now < to
+}
+
+/* ------------------------------------------------------------------ *
+ * World clock board
+ * ------------------------------------------------------------------ */
+
+/**
+ * Analog dial diameter. Every dial internal — tick inset, tick length, hand
+ * length — is expressed as a fraction of this one value, so the whole face
+ * rescales from a single custom property.
+ */
+const DIAL_DIAMETER = 62
+
+/** Hour-hand thickness. The minute hand steps down 1px, the second hand is a hairline. */
+const HAND_THICKNESS = 3
+
+/** Shown when no entry in the city control named a zone this engine recognized. */
+const NO_CITIES =
+  'No cities yet. Write them as "Berlin|Europe/Berlin", separated by commas — the zone ids come from your own browser, so anything it knows works.'
+
+/**
+ * UTC offset as a label: `GMT`, `GMT+2`, `GMT-7`, `GMT+5:30`.
+ *
+ * Deliberately absolute rather than relative to the viewer ("+8h from you"). A
+ * relative label would be computed against the author's machine when `markup`
+ * runs and against the taker's when `script` runs, so the exported file would
+ * disagree with the preview it came from — exactly the divergence the
+ * single-source principle exists to make impossible.
+ */
+export function gmtOffsetLabel(offsetMinutes: number): string {
+  if (!Number.isFinite(offsetMinutes) || offsetMinutes === 0) return 'GMT'
+  const sign = offsetMinutes < 0 ? '-' : '+'
+  const abs = Math.abs(Math.round(offsetMinutes))
+  const h = Math.floor(abs / 60)
+  const m = abs % 60
+  return `GMT${sign}${h}${m ? ':' + pad2(m) : ''}`
+}
+
+/** A working-hours bound as a wall-clock label: `9` -> `09:00`, `9.5` -> `09:30`. */
+function hourLabel(hour: number): string {
+  const total = Math.round(clamp(Number.isFinite(hour) ? hour : 0, 0, 24) * 60)
+  return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`
+}
+
+/** JSON literal safe to embed inside a `<script>` element in the HTML export. */
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\\u003c')
+}
+
+/** Three decimals, trailing zeros trimmed — readable degrees in the exported markup. */
+function deg(n: number): string {
+  return `${Math.round(n * 1000) / 1000}deg`
+}
+
+/** Indent every non-blank line of a block, so nested markup exports readable. */
+function nest(block: string, pad: string): string[] {
+  return block.split('\n').map((l) => (l.trim() ? pad + l : l))
+}
+
+/** One city cell: a face, the city name, and the day/offset line under it. */
+function worldClockCell(city: City, p: Props, now: Date): string {
+  const parts = zonedParts(city.zone, now)
+  const digital = String(p.face) === 'digital'
+  const withSeconds = Boolean(p.seconds)
+  const working = Boolean(p.highlight) && isWorkingHour(parts, Number(p.workStart), Number(p.workEnd))
+
+  // A cell with no reading shows no time at all. It never falls back to the
+  // viewer's own zone: a face labelled "Berlin" quietly showing Seoul's time is
+  // wrong in the one way nobody catches.
+  const hhmm = parts ? `${pad2(parts.hour)}:${pad2(parts.minute)}` : ''
+  const zoneLine = parts
+    ? `${parts.weekday} · ${gmtOffsetLabel(parts.offsetMinutes)}`
+    : `${city.zone} unavailable`
+
+  // Hand angles ride on the cell as inline custom properties. They cannot live
+  // in the stylesheet: `injectCss` keys its <style> element by widget id, so all
+  // six cells share exactly one sheet and per-cell values have nowhere else to go.
+  const rot: string[] = []
+  if (parts && !digital) {
+    const second = parts.second
+    const minute = parts.minute + second / 60
+    const hour = (parts.hour % 12) + minute / 60
+    rot.push(`--wg-rot-hour: ${deg(hour * 30)}`)
+    rot.push(`--wg-rot-minute: ${deg(minute * 6)}`)
+    if (withSeconds) rot.push(`--wg-rot-second: ${deg(second * 6)}`)
+  }
+  const style = rot.length ? ` style="${esc(rot.join('; '))}"` : ''
+  const cls =
+    'wg-world-clock__cell' + (working ? ' is-work' : '') + (parts ? '' : ' is-unavailable')
+
+  const face: string[] = digital
+    ? [
+        '<span class="wg-world-clock__readout">',
+        `  <span class="wg-world-clock__time" data-time>${esc(hhmm)}</span>`,
+        ...(withSeconds
+          ? [
+              `  <span class="wg-world-clock__secs" data-secs>${
+                parts ? ':' + pad2(parts.second) : ''
+              }</span>`,
+            ]
+          : []),
+        '</span>',
+      ]
+    : [
+        // Four marks, not twelve: at this diameter a full ring reads as texture
+        // rather than as the quarters it is there to mark.
+        ...[0, 90, 180, 270].map((a) => `<i class="wg-world-clock__tick" style="--i:${a}"></i>`),
+        '<i class="wg-world-clock__hand wg-world-clock__hand--hour"></i>',
+        '<i class="wg-world-clock__hand wg-world-clock__hand--minute"></i>',
+        ...(withSeconds
+          ? ['<i class="wg-world-clock__hand wg-world-clock__hand--second"></i>']
+          : []),
+        // A dial holds no readable time. This carries one for anyone not looking at it.
+        `<span class="wg-world-clock__sr" data-sr>${esc(hhmm || 'Time unavailable')}</span>`,
+      ]
+
+  // The two faces share a height so the board does not resize when you switch
+  // between them, but not a shape: a dial is a circle, a readout is wider than it
+  // is tall and would spill out of one.
+  const faceCls = 'wg-world-clock__face' + (digital ? ' wg-world-clock__face--wide' : '')
+
+  return [
+    `<div class="${cls}" data-city data-zone="${esc(city.zone)}"${style}>`,
+    `  <span class="${faceCls}">`,
+    ...nest(face.join('\n'), '    '),
+    '    <span class="wg-world-clock__off" aria-hidden="true">—</span>',
+    '  </span>',
+    '  <span class="wg-world-clock__meta">',
+    `    <span class="wg-world-clock__city">${esc(city.label)}</span>`,
+    `    <span class="wg-world-clock__zone" data-zone-line>${esc(zoneLine)}</span>`,
+    '  </span>',
+    '</div>',
+  ].join('\n')
+}
+
+export const worldClock: WidgetSpec = {
+  id: 'world-clock',
+  name: 'World Clock',
+  category: 'time',
+  blurb: 'Up to six cities on one board, analog or digital, with working hours lit.',
+  tags: ['clock', 'time', 'timezone', 'team'],
+  frame: { w: 372, h: 282 },
+  controls: [
+    {
+      key: 'cities',
+      label: 'Cities',
+      type: 'text',
+      default:
+        'San Francisco|America/Los_Angeles, New York|America/New_York, London|Europe/London, Berlin|Europe/Berlin, Mumbai|Asia/Kolkata, Seoul|Asia/Seoul',
+      maxLength: 240,
+    },
+    {
+      key: 'face',
+      label: 'Face',
+      type: 'select',
+      default: 'analog',
+      options: [
+        { value: 'analog', label: 'Analog' },
+        { value: 'digital', label: 'Digital' },
+      ],
+    },
+    { key: 'seconds', label: 'Show seconds', type: 'boolean', default: true },
+    { key: 'smooth', label: 'Sweeping second', type: 'boolean', default: true },
+    { key: 'highlight', label: 'Light working hours', type: 'boolean', default: true, group: 'Working hours' },
+    { key: 'workStart', label: 'Starts', type: 'number', default: 9, min: 0, max: 24, step: 0.5, unit: 'h', group: 'Working hours' },
+    { key: 'workEnd', label: 'Ends', type: 'number', default: 18, min: 0, max: 24, step: 0.5, unit: 'h', group: 'Working hours' },
+    { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
+    { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
+    { key: 'accent', label: 'Working hours', type: 'color', default: '#3ef07d', group: 'Color' },
+  ],
+  vars: (p) => ({
+    '--wg-bg': String(p.bg),
+    '--wg-ink': String(p.ink),
+    '--wg-accent': String(p.accent),
+    '--wg-dial': `${DIAL_DIAMETER}px`,
+    '--wg-hand': `${HAND_THICKNESS}px`,
+  }),
+  markup: (p) => {
+    const cities = parseCities(String(p.cities))
+    if (!cities.length) return `<p class="wg-world-clock__empty">${esc(NO_CITIES)}</p>`
+    const now = new Date()
+    return [
+      '<div class="wg-world-clock__grid">',
+      ...nest(cities.map((c) => worldClockCell(c, p, now)).join('\n'), '  '),
+      '</div>',
+      // The tint needs a caption. Without one it reads as decoration rather than
+      // as the answer to "is it a reasonable hour there".
+      ...(p.highlight
+        ? [
+            '<p class="wg-world-clock__legend">',
+            '  <i aria-hidden="true"></i>',
+            `  <span>Working hours ${hourLabel(Number(p.workStart))}–${hourLabel(
+              Number(p.workEnd),
+            )}, local to each city.</span>`,
+            '</p>',
+          ]
+        : []),
+    ].join('\n')
+  },
+  css: () => dedent(`
+    .wg-world-clock {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 372px;
+      padding: 20px;
+      box-sizing: border-box;
+      border-radius: 22px;
+      background: var(--wg-bg);
+      color: var(--wg-ink);
+      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wg-world-clock__grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .wg-world-clock__cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      opacity: .7;
+      transition: opacity .3s ease;
+    }
+    .wg-world-clock__cell.is-work { opacity: 1; }
+    .wg-world-clock__face {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: var(--wg-dial);
+      height: var(--wg-dial);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--wg-ink) 12%, transparent);
+      transition: background .3s ease;
+    }
+    .wg-world-clock__face--wide { width: 100%; border-radius: 99px; }
+    .wg-world-clock__cell.is-work .wg-world-clock__face {
+      background: color-mix(in srgb, var(--wg-accent) 35%, transparent);
+    }
+    .wg-world-clock__tick {
+      position: absolute;
+      left: 50%;
+      top: calc(var(--wg-dial) * .08);
+      width: 2px;
+      height: calc(var(--wg-dial) * .1);
+      margin-left: -1px;
+      border-radius: 99px;
+      background: currentColor;
+      opacity: .35;
+      transform-origin: 50% calc(var(--wg-dial) * .42);
+      transform: rotate(calc(var(--i) * 1deg));
+    }
+    .wg-world-clock__hand {
+      position: absolute;
+      left: 50%;
+      bottom: 50%;
+      border-radius: 99px;
+      background: currentColor;
+      transform-origin: 50% 100%;
+      transform: translateX(-50%) rotate(var(--wg-rot, 0deg));
+    }
+    .wg-world-clock__hand--hour {
+      width: var(--wg-hand);
+      height: calc(var(--wg-dial) * .26);
+      --wg-rot: var(--wg-rot-hour, 0deg);
+    }
+    .wg-world-clock__hand--minute {
+      width: calc(var(--wg-hand) - 1px);
+      height: calc(var(--wg-dial) * .36);
+      --wg-rot: var(--wg-rot-minute, 0deg);
+    }
+    .wg-world-clock__hand--second {
+      width: calc(var(--wg-hand) - 2px);
+      height: calc(var(--wg-dial) * .4);
+      opacity: .55;
+      --wg-rot: var(--wg-rot-second, 0deg);
+    }
+    .wg-world-clock__readout { display: flex; align-items: baseline; }
+    .wg-world-clock__time {
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: -.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .wg-world-clock__secs {
+      font-size: 12px;
+      opacity: .55;
+      font-variant-numeric: tabular-nums;
+    }
+    .wg-world-clock__off { display: none; font-size: 18px; opacity: .35; line-height: 1; }
+    .wg-world-clock__cell.is-unavailable .wg-world-clock__off { display: block; }
+    .wg-world-clock__cell.is-unavailable .wg-world-clock__readout,
+    .wg-world-clock__cell.is-unavailable .wg-world-clock__tick,
+    .wg-world-clock__cell.is-unavailable .wg-world-clock__hand { display: none; }
+    .wg-world-clock__meta {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      max-width: 100%;
+    }
+    .wg-world-clock__city {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 600;
+      transition: color .3s ease;
+    }
+    .wg-world-clock__cell.is-work .wg-world-clock__city { color: var(--wg-accent); }
+    .wg-world-clock__zone {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+      opacity: .55;
+      font-variant-numeric: tabular-nums;
+    }
+    .wg-world-clock__legend {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+      font-size: 11px;
+      opacity: .55;
+    }
+    .wg-world-clock__legend i {
+      flex: 0 0 auto;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--wg-accent);
+    }
+    .wg-world-clock__empty { margin: 0; font-size: 12px; line-height: 1.3; opacity: .55; }
+    .wg-world-clock__sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wg-world-clock__cell,
+      .wg-world-clock__face,
+      .wg-world-clock__city { transition: none; }
+    }
+  `),
+  script: (p) => {
+    const cities = parseCities(String(p.cities))
+    const digital = String(p.face) === 'digital'
+    const on = Boolean(p.highlight)
+    const from = on ? Math.round(clamp(Number(p.workStart), 0, 24) * 60) : -1
+    const to = on ? Math.round(clamp(Number(p.workEnd), 0, 24) * 60) : -1
+    return dedent(`
+      var CITIES = ${scriptJson(cities)};
+      var DIGITAL = ${digital ? 'true' : 'false'};
+      var SECONDS = ${p.seconds ? 'true' : 'false'};
+      var SMOOTH = ${p.smooth ? 'true' : 'false'};
+      var FROM = ${from}, TO = ${to};
+      var cells = root.querySelectorAll('[data-city]');
+      if (!cells.length) return function () {};
+
+      // Reduced motion is answered here, not only in the stylesheet: the sweeping
+      // hand is driven by a frame loop, and a media query cannot stop a loop. Under
+      // 'reduce' the board keeps perfect time on a one-second interval instead.
+      var mq = null;
+      try {
+        mq = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+      } catch (e) { mq = null; }
+      function sweeping() { return SMOOTH && SECONDS && !DIGITAL && !(mq && mq.matches); }
+
+      // One formatter per city, built once. A zone this engine does not know is
+      // remembered as null and stays blank forever after — never resolved to the
+      // viewer's own zone, which would read as correct while being wrong.
+      var fmts = [], lastLine = [], lastTime = [];
+      for (var i = 0; i < CITIES.length; i++) {
+        fmts.push(formatter(CITIES[i].zone));
+        lastLine.push(null);
+        lastTime.push(null);
+      }
+      function formatter(zone) {
+        try {
+          return new Intl.DateTimeFormat('en-US', {
+            timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+            day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short'
+          });
+        } catch (e) { return null; }
+      }
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+      function gmt(off) {
+        if (!off) return 'GMT';
+        var sign = off < 0 ? '-' : '+', abs = Math.abs(off);
+        var h = Math.floor(abs / 60), m = abs % 60;
+        return 'GMT' + sign + h + (m ? ':' + pad2(m) : '');
+      }
+      function read(i, now) {
+        var f = fmts[i];
+        if (!f) return null;
+        var bag = {}, list = f.formatToParts(now);
+        for (var j = 0; j < list.length; j++) {
+          if (list[j].type !== 'literal') bag[list[j].type] = list[j].value;
+        }
+        var y = +bag.year, mo = +bag.month, d = +bag.day;
+        var h = +bag.hour % 24, mi = +bag.minute, s = +bag.second;
+        if (!isFinite(y) || !isFinite(mo) || !isFinite(d) || !isFinite(h) || !isFinite(mi) || !isFinite(s)) return null;
+        return {
+          hour: h, minute: mi, second: s, weekday: bag.weekday || '', minutes: h * 60 + mi,
+          offset: Math.round((Date.UTC(y, mo - 1, d, h, mi, s) - now.getTime()) / 60000)
+        };
+      }
+      function working(parts) {
+        if (!parts || FROM < 0 || FROM === TO) return false;
+        return FROM < TO
+          ? (parts.minutes >= FROM && parts.minutes < TO)
+          : (parts.minutes >= FROM || parts.minutes < TO);
+      }
+      function render() {
+        var now = new Date(), ms = now.getMilliseconds(), sweep = sweeping();
+        for (var i = 0; i < cells.length; i++) {
+          var cell = cells[i], parts = read(i, now);
+          if (!parts) {
+            if (!cell.classList.contains('is-unavailable')) {
+              cell.classList.add('is-unavailable');
+              cell.classList.remove('is-work');
+              cell.style.removeProperty('--wg-rot-hour');
+              cell.style.removeProperty('--wg-rot-minute');
+              cell.style.removeProperty('--wg-rot-second');
+              write(cell, '[data-time]', '');
+              write(cell, '[data-secs]', '');
+              write(cell, '[data-sr]', 'Time unavailable');
+              write(cell, '[data-zone-line]', (CITIES[i] ? CITIES[i].zone : '') + ' unavailable');
+              lastLine[i] = null;
+              lastTime[i] = null;
+            }
+            continue;
+          }
+          cell.classList.remove('is-unavailable');
+          cell.classList.toggle('is-work', working(parts));
+          if (DIGITAL) {
+            var stamp = pad2(parts.hour) + ':' + pad2(parts.minute) + ':' + pad2(parts.second);
+            if (stamp !== lastTime[i]) {
+              write(cell, '[data-time]', stamp.slice(0, 5));
+              write(cell, '[data-secs]', ':' + stamp.slice(6));
+              lastTime[i] = stamp;
+            }
+          } else {
+            var sec = parts.second + (sweep ? ms / 1000 : 0);
+            var min = parts.minute + sec / 60;
+            var hour = (parts.hour % 12) + min / 60;
+            cell.style.setProperty('--wg-rot-hour', (hour * 30) + 'deg');
+            cell.style.setProperty('--wg-rot-minute', (min * 6) + 'deg');
+            if (SECONDS) cell.style.setProperty('--wg-rot-second', (sec * 6) + 'deg');
+            var label = pad2(parts.hour) + ':' + pad2(parts.minute);
+            if (label !== lastTime[i]) {
+              write(cell, '[data-sr]', label);
+              lastTime[i] = label;
+            }
+          }
+          var line = parts.weekday + ' \\u00b7 ' + gmt(parts.offset);
+          if (line !== lastLine[i]) {
+            write(cell, '[data-zone-line]', line);
+            lastLine[i] = line;
+          }
+        }
+      }
+      function write(cell, sel, text) {
+        var el = cell.querySelector(sel);
+        if (el) el.textContent = text;
+      }
+
+      var frame = 0, timer = 0;
+      function stop() {
+        if (frame) cancelAnimationFrame(frame);
+        if (timer) clearInterval(timer);
+        frame = 0;
+        timer = 0;
+      }
+      function start() {
+        stop();
+        render();
+        if (sweeping()) {
+          var loop = function () { render(); frame = requestAnimationFrame(loop); };
+          frame = requestAnimationFrame(loop);
+        } else {
+          timer = setInterval(render, 1000);
+        }
+      }
+      var onMotionChange = function () { start(); };
+      if (mq && mq.addEventListener) mq.addEventListener('change', onMotionChange);
+      start();
+      return function () {
+        stop();
+        if (mq && mq.removeEventListener) mq.removeEventListener('change', onMotionChange);
+      };
+    `)
+  },
 }

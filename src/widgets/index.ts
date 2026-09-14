@@ -1,5 +1,5 @@
 import type { WidgetSpec } from '../lib/types'
-import { clock, agenda, countdown } from './time'
+import { clock, agenda, countdown, worldClock } from './time'
 import { battery, brightness, toggle, compass, signal } from './system'
 import { player, waveform, recordbutton } from './media'
 import { weather, waterwave, wallet, contactCard } from './data'
@@ -22,6 +22,7 @@ export const WIDGETS: WidgetSpec[] = [
   contactCard,
   agenda,
   countdown,
+  worldClock,
   signal,
   recordbutton,
 ]
