@@ -5,6 +5,8 @@
  * what lands in the download.
  */
 
+import { joinCityList, splitCityList } from './citylist'
+
 export type ControlValue = string | number | boolean
 
 export type Control =
@@ -31,6 +33,21 @@ export type Control =
     }
   | { key: string; label: string; group?: string; type: 'text'; default: string; maxLength?: number }
   | { key: string; label: string; group?: string; type: 'datetime'; default: string }
+  /**
+   * A bounded list of time zones, edited as rows in the studio and stored as one
+   * `Label|Zone, ...` string. The value stays a string on purpose: `?p=` links and
+   * Config exports carry control values verbatim, so a richer type here would break
+   * every link already shared.
+   */
+  | {
+      key: string
+      label: string
+      group?: string
+      type: 'citylist'
+      default: string
+      /** most rows the picker offers, which is the widget's own cap on faces */
+      max: number
+    }
 
 export type Props = Record<string, ControlValue>
 
@@ -89,6 +106,12 @@ export function normalizeProps(spec: WidgetSpec, incoming: Partial<Props> | unde
     else if (c.type === 'color' && typeof v === 'string') base[c.key] = v
     else if (c.type === 'text' && typeof v === 'string') base[c.key] = v
     else if (c.type === 'datetime' && typeof v === 'string') base[c.key] = v
+    // Canonical spelling in, so a hand-edited link and a picker-built one that mean
+    // the same board produce the same string. Rows with no zone are dropped here
+    // rather than in the codec: the picker needs to hold a just-cleared row, an
+    // arriving link has no reason to carry one.
+    else if (c.type === 'citylist' && typeof v === 'string')
+      base[c.key] = joinCityList(splitCityList(v).filter((e) => e.zone !== ''))
     else if (c.type === 'select' && typeof v === 'string' && c.options.some((o) => o.value === v))
       base[c.key] = v
   }

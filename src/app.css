@@ -8,6 +8,7 @@
   --ink: #e9ebee;
   --muted: #9aa1ab;
   --accent: #7c6cff;
+  --alert: #ff3b5c;
   --accent-ink: #ffffff;
   --plaster: #d6d8da;
   --radius: 16px;
@@ -396,7 +397,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   outline: none;
 }
 
-.field--text input, .field--select select, .field--datetime input {
+.field--text input, .field--select select, .field--datetime input, .citylist__zone {
   width: 100%;
   padding: 9px 11px;
   border: 1px solid var(--line);
@@ -407,7 +408,36 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .field--select select { width: 150px; }
-.field--text input:focus, .field--select select:focus, .field__hex:focus, .field--datetime input:focus { border-color: var(--accent); }
+.field--text input:focus, .field--select select:focus, .field__hex:focus, .field--datetime input:focus, .citylist__zone:focus { border-color: var(--accent); }
+
+/* City picker. The row is the only new shape here: the field borrows the text
+   input above and the chrome button, so a picker row and a text control read as
+   the same control at the same weight. */
+.citylist { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.citylist__row { display: flex; align-items: center; gap: 8px; }
+
+/* Zone ids are identifiers, not prose — set like the hex field, for the same reason. */
+.citylist__zone { flex: 1 1 auto; min-width: 0; font-family: var(--mono); font-size: 12px; }
+.citylist__zone::placeholder { color: var(--muted); }
+
+/* Only shown when the face carries a name the zone would not produce, so the
+   picker never hides what the board will actually say. */
+.citylist__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.citylist__drop { flex: 0 0 auto; line-height: 1; }
+.citylist__add { align-self: flex-start; }
+
+.citylist__note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.citylist__note.is-bad { color: var(--alert); }
+.citylist__zone.is-bad, .citylist__zone.is-bad:focus { border-color: var(--alert); }
 
 .field input[type="range"] {
   width: 100%;

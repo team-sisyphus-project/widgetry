@@ -1,3 +1,14 @@
+import type { CityEntry } from '../lib/citylist'
+import {
+  cityLabel,
+  hasCustomLabel,
+  isKnownZone,
+  joinCityList,
+  splitCityList,
+  suggestZone,
+  withZone,
+  zoneOptions,
+} from '../lib/citylist'
 import type { Control, Props, WidgetSpec } from '../lib/types'
 
 interface Props_ {
@@ -114,6 +125,10 @@ function Field({
     )
   }
 
+  if (control.type === 'citylist') {
+    return <CityList control={control} value={String(value)} onChange={onChange} />
+  }
+
   if (control.type === 'datetime') {
     return (
       <label className="field field--datetime">
@@ -137,5 +152,104 @@ function Field({
         onChange={(e) => onChange(control.key, e.target.value)}
       />
     </label>
+  )
+}
+
+/**
+ * The city picker: one row per zone, each a plain text field backed by the
+ * engine's own zone catalogue.
+ *
+ * The rows are drawn from the control value and nothing else — there is no local
+ * copy of the list to drift out of step with the preview. Every edit writes the
+ * whole value back, so what the board renders, what `?p=` carries and what the
+ * rows show are the same string at all times.
+ */
+function CityList({
+  control,
+  value,
+  onChange,
+}: {
+  control: Extract<Control, { type: 'citylist' }>
+  value: string
+  onChange: (key: string, value: Props[string]) => void
+}) {
+  const rows = splitCityList(value)
+  const zones = zoneOptions()
+  const listId = `citylist-${control.key}`
+  const full = rows.length >= control.max
+  const write = (next: CityEntry[]) => onChange(control.key, joinCityList(next))
+
+  return (
+    <div className="field field--citylist">
+      <span className="field__label">
+        {control.label}
+        <b>
+          {rows.length}/{control.max}
+        </b>
+      </span>
+
+      <ul className="citylist">
+        {rows.map((row, i) => {
+          // An empty row is being typed into, not broken. Only a filled row that
+          // this engine cannot resolve is marked — that is a face the board will
+          // refuse to draw, and the picker is the only place to say so.
+          const unknown = row.zone !== '' && !isKnownZone(row.zone)
+          return (
+            <li className="citylist__row" key={i}>
+              <input
+                className={'citylist__zone' + (unknown ? ' is-bad' : '')}
+                type="text"
+                list={zones.length ? listId : undefined}
+                value={row.zone}
+                placeholder="Region/City"
+                spellCheck={false}
+                autoComplete="off"
+                aria-label={`${control.label} ${i + 1}`}
+                aria-invalid={unknown || undefined}
+                onChange={(e) =>
+                  write(rows.map((r, j) => (j === i ? withZone(r, e.target.value) : r)))
+                }
+              />
+              {hasCustomLabel(row) && (
+                <span className="citylist__name" title={`Shown as ${row.label}`}>
+                  {row.label}
+                </span>
+              )}
+              <button
+                type="button"
+                className="btn btn--ghost btn--small citylist__drop"
+                aria-label={`Remove ${cityLabel(row) || `city ${i + 1}`}`}
+                onClick={() => write(rows.filter((_, j) => j !== i))}
+              >
+                &times;
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+
+      <button
+        type="button"
+        className="btn btn--ghost btn--small citylist__add"
+        disabled={full}
+        onClick={() => write([...rows, { label: '', zone: suggestZone(rows.map((r) => r.zone)) }])}
+      >
+        {full ? `That is all ${control.max}` : 'Add a city'}
+      </button>
+
+      {rows.some((r) => r.zone !== '' && !isKnownZone(r.zone)) && (
+        <p className="citylist__note is-bad">
+          Marked zones are not in this browser&rsquo;s data, so the board leaves them out.
+        </p>
+      )}
+
+      {zones.length > 0 && (
+        <datalist id={listId}>
+          {zones.map((z) => (
+            <option key={z} value={z} />
+          ))}
+        </datalist>
+      )}
+    </div>
   )
 }

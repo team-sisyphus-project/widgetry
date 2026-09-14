@@ -98,11 +98,16 @@ describe('world-clock controls contract', () => {
     }
   })
 
-  it('carries the city list in one text control long enough to hold six entries', () => {
+  it('carries the city list in one citylist control bounded to six rows', () => {
+    // grain-5 moved this control from free text to the studio picker. Only the
+    // editor changed: the stored value is still one delimited string, which is
+    // what `?p=` links and Config exports carry, so the assertion that matters is
+    // the one that was here before — the default has to read as six faces.
     const cities = spec.controls.find((c) => c.key === 'cities')
-    expect(cities?.type).toBe('text')
-    if (cities?.type === 'text') {
-      expect(cities.maxLength ?? Infinity).toBeGreaterThanOrEqual(String(cities.default).length)
+    expect(cities?.type).toBe('citylist')
+    if (cities?.type === 'citylist') {
+      expect(typeof cities.default).toBe('string')
+      expect(cities.max).toBe(MAX_CITIES)
       expect(parseCities(String(cities.default))).toHaveLength(MAX_CITIES)
     }
   })

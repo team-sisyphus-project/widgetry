@@ -793,10 +793,12 @@ export const worldClock: WidgetSpec = {
     {
       key: 'cities',
       label: 'Cities',
-      type: 'text',
+      // The studio edits this as rows; the value it writes is still the one
+      // delimited string `parseCities` reads, so links and exports are unchanged.
+      type: 'citylist',
       default:
         'San Francisco|America/Los_Angeles, New York|America/New_York, London|Europe/London, Berlin|Europe/Berlin, Mumbai|Asia/Kolkata, Seoul|Asia/Seoul',
-      maxLength: 240,
+      max: MAX_CITIES,
     },
     {
       key: 'face',
