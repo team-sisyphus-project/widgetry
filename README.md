@@ -75,6 +75,19 @@ override. The web component reads them through the shadow boundary.
 Tuning a widget rewrites the URL, so `#/w/toggle?p=…` restores the exact build
 for anyone who opens the link. The Config export does the same thing as a file.
 
+## Saved notes
+
+One widget keeps something outside its props. The Scratchpad writes the note you
+type into `localStorage`, under `widgetry:scratchpad:<storageKey>` — the **Save
+slot** control names that last segment, so two scratchpads on one page are two
+notes rather than one, and you can find or clear a note by hand. Leave the slot
+blank and saving is off; the note then lasts as long as the page does.
+
+Nothing is written until you type, nothing leaves the browser, and a browser that
+refuses storage still runs the widget — the note simply does not outlive the tab.
+Exports carry the configuration; the browser carries the content. A note is never
+baked into an export and never encoded into a share link.
+
 ## Running it
 
 ```bash

@@ -396,6 +396,28 @@ const NOTE_EMPTY =
   '<p class="wg-scratchpad__empty">Nothing written yet. The Edit button opens the editor.</p>'
 
 /**
+ * The `localStorage` namespace this widget writes under. The full key is
+ * `STORE_PREFIX + storageKey`, so every record a visitor's browser holds for this
+ * widget is findable, deletable and obviously ours - and cannot collide with a key
+ * some other script on the host page chose.
+ *
+ * It is a constant rather than a control because the part an author needs to vary is
+ * the slot, not the namespace, and a namespace an author could edit is one two
+ * embeds could accidentally agree on.
+ */
+const STORE_PREFIX = 'widgetry:scratchpad:'
+
+/**
+ * How long typing settles before the note is written.
+ *
+ * Long enough that a sentence is one write rather than forty, short enough that a
+ * visitor who types and immediately closes the tab keeps the sentence. It is not a
+ * safety net on its own - the disposer flushes a pending write - so the number only
+ * has to be reasonable, not exact.
+ */
+const SAVE_DEBOUNCE_MS = 400
+
+/**
  * A JavaScript string literal that is safe in every place a widget script lands.
  *
  * `JSON.stringify` alone is not enough. The html export drops the script body inside
@@ -450,12 +472,44 @@ function jsString(s: string): string {
  * file is the only implementation - the studio preview compiles the same source
  * through `new Function` - so there is no second renderer to drift from, and the
  * escape-first ordering that makes it safe against hostile input travels with it.
+ *
+ * ## Where the note lives
+ *
+ * The note the visitor types is kept in `localStorage` under
+ * `widgetry:scratchpad:<storageKey>`. The Save slot control names the last segment,
+ * which is what makes two scratchpads on one page two notes rather than one: the
+ * prefix alone would make every embed on a site share a single record. Clearing the
+ * control switches saving off entirely - the note then lives as long as the page
+ * does - so an embed that must not leave a trace has a way to say so.
+ *
+ * Three rules bound it, and each one is a test:
+ *
+ * 1. **Nothing is written until the visitor types.** Mounting reads; only `input`
+ *    and the Edit toggle write. A gallery that mounts nineteen widgets to draw the
+ *    tiles must not deposit nineteen records in the visitor's browser, and a note
+ *    nobody wrote is not data worth keeping.
+ * 2. **Storage may refuse, and refusing is not an error.** Private mode, a
+ *    sandboxed iframe and a full quota all throw, on the property access as well as
+ *    on the call, so every access is guarded and a failure degrades to in-memory.
+ *    `mount()` swallows a throwing script and renders nothing (src/lib/render.ts),
+ *    so an unguarded access would not show up as a broken save - it would show up
+ *    as a blank card.
+ * 3. **A saved note belongs to the configuration it was saved against.** The record
+ *    carries the note prop and the opening mode it was written under, and is
+ *    ignored when either has since changed. Without that, editing the Note control
+ *    in the studio would appear to do nothing - the stored note would win every
+ *    time - and the control would be dead. Colour changes are deliberately not part
+ *    of it: recolouring remounts the widget and must not cost the visitor a note.
+ *
+ * The note is never written into `markup`, never encoded into the share link, and
+ * never included in an export. Exports carry configuration; the browser carries
+ * content.
  */
 export const scratchpad: WidgetSpec = {
   id: 'scratchpad',
   name: 'Scratchpad',
   category: 'life',
-  blurb: 'A note you can type into, with a little Markdown rendered as you go.',
+  blurb: 'A note you can type into, with a little Markdown rendered as you go, saved in your browser.',
   tags: ['note', 'markdown', 'text'],
   frame: { w: 280, h: 200 },
   interactive: true,
@@ -477,6 +531,7 @@ export const scratchpad: WidgetSpec = {
         { value: 'edit', label: 'Editor' },
       ],
     },
+    { key: 'storageKey', label: 'Save slot', type: 'text', default: 'notes', maxLength: 24 },
     { key: 'bg', label: 'Card', type: 'color', default: '#0a0a0a', group: 'Color' },
     { key: 'ink', label: 'Ink', type: 'color', default: '#ffffff', group: 'Color' },
     { key: 'accent', label: 'Accent', type: 'color', default: '#2f8bff', group: 'Color' },
@@ -607,21 +662,93 @@ export const scratchpad: WidgetSpec = {
       .wg-scratchpad__editor { transition: none; }
     }
   `),
-  script: (p) =>
-    [
+  script: (p) => {
+    const slot = String(p.storageKey).trim()
+    return [
       MD_JS,
       dedent(`
         var seed = ${jsString(String(p.text))};
         var empty = ${jsString(NOTE_EMPTY)};
+
+        /* Where this embed keeps its note. The Save slot control names the last
+           segment, which is what makes two scratchpads on one page two notes rather
+           than one. A blank slot is saving switched off: null, not a shared key. */
+        var slot = ${slot ? jsString(STORE_PREFIX + slot) : 'null'};
+        var SAVE_MS = ${SAVE_DEBOUNCE_MS};
+
         var body = root.querySelector('[data-body]');
         var editor = root.querySelector('[data-editor]');
         var preview = root.querySelector('[data-preview]');
         var toggle = root.querySelector('[data-edit]');
 
+        /* The configuration this embed was built with, read back off the page rather
+           than inlined a second time so the two cannot drift. A stored note is
+           restored only against the configuration it was stored under: edit the Note
+           or Opens in control and the control wins, which is what keeps both of them
+           live in the studio. Colours are deliberately absent - recolouring remounts
+           the widget and must not cost the visitor a note.
+
+           It is a JSON array rather than two strings joined by a separator: a note is
+           free text, so every separator character is one a note could contain, and
+           two configurations that differ must never stringify the same. */
+        var config = JSON.stringify([seed, body.classList.contains('is-editing') ? 'edit' : 'preview']);
+
         /* The only place preview HTML is produced, in the studio and in every export. */
         function paint() {
           var text = editor.value;
           preview.innerHTML = text.trim() ? ${MD_ENTRY}(text) : empty;
+        }
+
+        /* Storage may refuse, and refusing is not an error: private mode, a sandboxed
+           iframe and a full quota all throw - on the property access as much as on the
+           call - and the widget has to keep working through it. Reaching it through one
+           guarded function means no caller can forget that. */
+        function shelf() {
+          if (!slot) return null;
+          try {
+            return typeof window === 'undefined' ? null : window.localStorage || null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function load() {
+          var box = shelf();
+          if (!box) return null;
+          try {
+            var rec = JSON.parse(box.getItem(slot));
+            if (!rec || typeof rec.t !== 'string' || rec.c !== config) return null;
+            return rec;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function write() {
+          var box = shelf();
+          if (!box) return;
+          try {
+            box.setItem(slot, JSON.stringify({
+              t: editor.value,
+              e: body.classList.contains('is-editing'),
+              c: config
+            }));
+          } catch (e) {
+            /* Nothing to recover: the note is already on screen and stays there. */
+          }
+        }
+
+        /* Typing settles before it is written, so a sentence is one write. Anything
+           that ends the session early - the toggle, the disposer - commits at once
+           rather than letting the timer lose the last few words. */
+        var pending = null;
+        function queue() {
+          if (pending !== null) clearTimeout(pending);
+          pending = setTimeout(function () { pending = null; write(); }, SAVE_MS);
+        }
+        function commit() {
+          if (pending !== null) { clearTimeout(pending); pending = null; }
+          write();
         }
 
         /* Character count, not the text: the note is the visitor's, and a bubbling
@@ -635,6 +762,7 @@ export const scratchpad: WidgetSpec = {
 
         function type() {
           paint();
+          queue();
           announce();
         }
 
@@ -643,17 +771,28 @@ export const scratchpad: WidgetSpec = {
           body.classList.toggle('is-editing', on);
           toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
           if (on) editor.focus();
+          commit();
           announce();
         }
 
-        editor.value = seed;
+        /* Mounting reads and never writes: a gallery that mounts every widget to draw
+           its tiles must not deposit a record per tile, and a note nobody wrote is not
+           data worth keeping. */
+        var saved = load();
+        editor.value = saved ? saved.t : seed;
+        if (saved) {
+          body.classList.toggle('is-editing', !!saved.e);
+          toggle.setAttribute('aria-pressed', saved.e ? 'true' : 'false');
+        }
         paint();
         editor.addEventListener('input', type);
         toggle.addEventListener('click', flip);
         return function () {
+          if (pending !== null) commit();
           editor.removeEventListener('input', type);
           toggle.removeEventListener('click', flip);
         };
       `),
-    ].join('\n'),
+    ].join('\n')
+  },
 }
