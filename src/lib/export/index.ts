@@ -37,6 +37,22 @@ function tokenEntries(spec: WidgetSpec, props: Props): [string, string][] {
   return Object.entries(spec.vars(props))
 }
 
+/**
+ * A token value on its way into an HTML attribute. Svelte writes the whole token layer
+ * into `style="..."` and Vue into `:style="{...}"`, and both attributes are delimited
+ * by a double quote - so a value carrying one would close the attribute and turn every
+ * token after it into a junk attribute, silently. Escaping is done here rather than
+ * left to each author to remember.
+ */
+function attrValue(v: string): string {
+  return v.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+/** The same value on its way into a single-quoted JS string inside that attribute. */
+function jsAttrValue(v: string): string {
+  return attrValue(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
 function tokenCssBlock(spec: WidgetSpec, props: Props, pad = '  '): string {
   return tokenEntries(spec, props)
     .map(([k, v]) => `${pad}${k}: ${v};`)
@@ -185,7 +201,7 @@ function vueTarget(spec: WidgetSpec, props: Props): ExportTarget {
     '<template>',
     `  <div${body ? ' ref="root"' : ''} class="${cls}" :style="{`,
     tokenEntries(spec, props)
-      .map(([k, v]) => `    '${k}': '${v}',`)
+      .map(([k, v]) => `    '${k}': '${jsAttrValue(v)}',`)
       .join('\n'),
     '  }">',
     indent(spec.markup(props), '    '),
@@ -211,7 +227,7 @@ function svelteTarget(spec: WidgetSpec, props: Props): ExportTarget {
   const cls = rootClass(spec)
   const body = scriptBody(spec, props)
   const inline = tokenEntries(spec, props)
-    .map(([k, v]) => `${k}: ${v}`)
+    .map(([k, v]) => `${k}: ${attrValue(v)}`)
     .join('; ')
   const content = lines(
     headerLines(spec, 'html'),

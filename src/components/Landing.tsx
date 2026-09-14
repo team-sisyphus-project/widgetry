@@ -8,7 +8,9 @@ import '../landing.css'
 const MOSAIC: { id: string; props?: Record<string, string | number | boolean> }[][] = [
   [
     { id: 'clock', props: { size: 168 } },
-    { id: 'weather' },
+    /* The poster is a poster: the forecast card sits here at its sample reading so a
+       first visit paints instantly and reaches no provider before anyone asks it to. */
+    { id: 'weather', props: { live: false } },
     { id: 'signal', props: { size: 80 } },
   ],
   [

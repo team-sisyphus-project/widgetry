@@ -17,6 +17,15 @@ const ATTR_MAP: Record<string, string> = {
   preserveaspectratio: 'preserveAspectRatio',
 }
 
+/**
+ * Form elements whose HTML `value` / `checked` attribute is a *starting* value. React
+ * reads those prop names as the controlled value instead, which freezes the field: the
+ * user types, React re-renders from the prop, and the keystroke disappears. The HTML
+ * attribute's actual meaning is React's `defaultValue` / `defaultChecked`.
+ */
+const FIELD = new Set(['input', 'textarea', 'select'])
+const DEFAULTED: Record<string, string> = { value: 'defaultValue', checked: 'defaultChecked' }
+
 type Attr = { name: string; value: string | null }
 type Node =
   | { kind: 'tag'; name: string; attrs: Attr[]; children: Node[] }
@@ -120,9 +129,14 @@ function jsxText(s: string): string {
 
 function emit(node: Node, pad: string, cast?: string): string {
   if (node.kind === 'text') return pad + jsxText(node.value)
+  const field = FIELD.has(node.name.toLowerCase())
   const attrs = node.attrs.map((a) => {
+    const lower = a.name.toLowerCase()
+    if (field && DEFAULTED[lower]) {
+      return a.value === null ? DEFAULTED[lower] : `${DEFAULTED[lower]}=${JSON.stringify(a.value)}`
+    }
     if (a.value === null) return jsxAttrName(a.name)
-    if (a.name.toLowerCase() === 'style') return `style={${styleObject(a.value, cast)}}`
+    if (lower === 'style') return `style={${styleObject(a.value, cast)}}`
     return `${jsxAttrName(a.name)}=${JSON.stringify(a.value)}`
   })
   const head = attrs.length
