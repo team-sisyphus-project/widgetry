@@ -1,4 +1,5 @@
 import type { WidgetSpec } from '../lib/types'
+import { clamp } from '../lib/types'
 import { dedent, esc, repeat } from '../lib/util'
 
 export const clock: WidgetSpec = {
@@ -434,4 +435,208 @@ export const countdown: WidgetSpec = {
       return function () { clearInterval(timer); };
     `)
   },
+}
+
+/* ------------------------------------------------------------------ *
+ * City board helpers — pure timezone arithmetic
+ *
+ * Shared by the city-clock board's `markup` and mirrored by its browser
+ * `script`, the same way `breakdown` above is mirrored by the countdown's
+ * tick engine. Everything here is a pure function of its arguments: no DOM,
+ * no network, no ambient `Date.now()`.
+ *
+ * All zone knowledge comes from the rendering engine's own `Intl` data — no
+ * bundled zone table, so there is nothing to keep up to date and nothing to
+ * ship. The cost of that choice is that the set of valid zone ids is a
+ * property of the machine running the code, not of the widget: an id the
+ * author's browser accepts may be unknown to the taker's. Both entry points
+ * below answer that case by refusing rather than guessing — `parseCities`
+ * drops the entry and `zonedParts` returns `null`. Neither ever falls back
+ * to the viewer's local time, because a face labelled "Berlin" quietly
+ * showing Seoul's time is wrong in the one way nobody catches.
+ * ------------------------------------------------------------------ */
+
+/** Most cities one board will show. Entries past this are ignored. */
+export const MAX_CITIES = 6
+
+/** Separates entries inside the single delimited control value. */
+const CITY_SEPARATOR = ','
+
+/** Separates an entry's display label from its zone id. */
+const LABEL_SEPARATOR = '|'
+
+/** One face of a city board: a human label and the zone that drives its time. */
+export interface City {
+  /** display name shown with the face, e.g. `Berlin` */
+  label: string
+  /** IANA zone id this engine recognized, e.g. `Europe/Berlin` */
+  zone: string
+}
+
+/** Wall-clock reading for one zone at one instant. */
+export interface ZonedParts {
+  /** the zone id this reading was resolved against */
+  zone: string
+  year: number
+  /** 1-12 */
+  month: number
+  /** 1-31 */
+  day: number
+  /** 0-23 */
+  hour: number
+  minute: number
+  second: number
+  /** short weekday name in the zone, e.g. `Sun` */
+  weekday: string
+  /** minutes since local midnight, 0-1439 — the value working hours compare against */
+  minutes: number
+  /** offset from UTC in minutes at this instant, east positive; reflects DST */
+  offsetMinutes: number
+}
+
+/**
+ * Memoized zone probes. Constructing an `Intl.DateTimeFormat` is the only way to
+ * ask whether a zone id exists, and it is expensive enough that six faces ticking
+ * once a second should not repeat it. `null` records a zone this engine rejected,
+ * so a bad id costs one `RangeError` for the life of the page rather than one per
+ * tick.
+ */
+const zoneFormatters = new Map<string, Intl.DateTimeFormat | null>()
+
+function formatterFor(zone: string): Intl.DateTimeFormat | null {
+  const key = typeof zone === 'string' ? zone.trim() : ''
+  if (!key) return null
+  const cached = zoneFormatters.get(key)
+  if (cached !== undefined) return cached
+  let fmt: Intl.DateTimeFormat | null = null
+  try {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: key,
+      // `hourCycle` rather than `hour12: false` — the latter reports midnight as
+      // hour 24 on some engines.
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      weekday: 'short',
+    })
+  } catch {
+    // RangeError: this engine's zone data has no such id. Remembered as unknown.
+    fmt = null
+  }
+  zoneFormatters.set(key, fmt)
+  return fmt
+}
+
+/** `Europe/Berlin` -> `Berlin`, `America/Argentina/Buenos_Aires` -> `Buenos Aires`. */
+function labelFromZone(zone: string): string {
+  const tail = zone.slice(zone.lastIndexOf('/') + 1)
+  return tail.replace(/_/g, ' ')
+}
+
+/**
+ * Parse the delimited city control into at most {@link MAX_CITIES} faces.
+ *
+ * Format is `Label|Zone` per entry, comma separated:
+ * `'Berlin|Europe/Berlin, Seoul|Asia/Seoul'`. The label is optional — a bare
+ * `Asia/Seoul` is read as that zone labelled `Seoul`, so a taker who types only
+ * ids still gets readable faces.
+ *
+ * Entries naming a zone this engine does not recognize are dropped, and a dropped
+ * entry does not consume one of the six slots: seven entries with one bad id still
+ * yield six faces. Order is preserved.
+ */
+export function parseCities(s: string): City[] {
+  const out: City[] = []
+  if (typeof s !== 'string') return out
+  for (const raw of s.split(CITY_SEPARATOR)) {
+    const entry = raw.trim()
+    if (!entry) continue
+    const cut = entry.indexOf(LABEL_SEPARATOR)
+    const label = cut < 0 ? '' : entry.slice(0, cut).trim()
+    const zone = (cut < 0 ? entry : entry.slice(cut + 1)).trim()
+    if (!formatterFor(zone)) continue
+    out.push({ label: label || labelFromZone(zone), zone })
+    if (out.length >= MAX_CITIES) break
+  }
+  return out
+}
+
+/**
+ * Wall-clock reading for `zone` at `date`, straight from the engine's `Intl` data —
+ * so DST transitions, half-hour offsets and historical rule changes are all handled
+ * by the same table the platform uses, with no shipped zone table to drift.
+ *
+ * Returns `null` when the engine does not recognize `zone`, or when `date` is
+ * invalid. `null` means "no reading", never "use local time": the caller renders an
+ * explicit unavailable state, so a face is never labelled with one city while
+ * showing another's time.
+ */
+export function zonedParts(zone: string, date: Date): ZonedParts | null {
+  const fmt = formatterFor(zone)
+  if (!fmt) return null
+  const t = date instanceof Date ? date.getTime() : NaN
+  if (!Number.isFinite(t)) return null
+
+  const bag: Record<string, string> = {}
+  for (const part of fmt.formatToParts(date)) {
+    if (part.type !== 'literal') bag[part.type] = part.value
+  }
+
+  const year = Number(bag.year)
+  const month = Number(bag.month)
+  const day = Number(bag.day)
+  // `% 24` guards engines that still render midnight as hour 24.
+  const hour = Number(bag.hour) % 24
+  const minute = Number(bag.minute)
+  const second = Number(bag.second)
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null
+
+  // Reading the same instant twice — once as the zone's wall clock, once as the
+  // true epoch — makes the offset fall out of the difference, DST included. Whole
+  // minutes, so the sub-second remainder dropped by `Date.UTC` rounds away.
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute, second)
+
+  return {
+    zone: zone.trim(),
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    weekday: bag.weekday ?? '',
+    minutes: hour * 60 + minute,
+    offsetMinutes: Math.round((asUtc - t) / 60000),
+  }
+}
+
+/** An hour-of-day bound as minutes since midnight; `24` is the end of the day. */
+function boundMinutes(hour: number): number | null {
+  if (!Number.isFinite(hour)) return null
+  return Math.round(clamp(hour, 0, 24) * 60)
+}
+
+/**
+ * Is the reading inside the working range `[start, end)`, in that city's own local
+ * time? Bounds are hours; the start is included and the end is excluded, so a 9-18
+ * range highlights 09:00 and 17:59 but not 08:59 or 18:00.
+ *
+ * When `end` is at or before `start` the range wraps midnight: 22-6 covers 22:00
+ * through 05:59. The one exception is an empty range — `start` equal to `end` after
+ * clamping — which matches nothing, the consistent reading of a half-open interval.
+ * A whole day is written 0-24.
+ *
+ * A `null` reading (an unrecognized zone) is never working hours.
+ */
+export function isWorkingHour(parts: ZonedParts | null, start: number, end: number): boolean {
+  if (!parts) return false
+  const from = boundMinutes(start)
+  const to = boundMinutes(end)
+  if (from === null || to === null || from === to) return false
+  const now = parts.minutes
+  return from < to ? now >= from && now < to : now >= from || now < to
 }
