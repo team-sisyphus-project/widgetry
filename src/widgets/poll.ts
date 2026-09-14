@@ -19,7 +19,10 @@ import { dedent, esc } from '../lib/util'
  *   - **live** (poll id set): the server owns the numbers. `percent` is used
  *     exactly as it arrives — the store already rounds a tally to whole
  *     percentages that sum to 100, and rounding a rounded number is how a bar
- *     chart ends up summing to 99.
+ *     chart ends up summing to 99. The tally keeps moving while the card is
+ *     open, because the other browsers voting in it are the point; the one
+ *     ordering rule is that the reader's own vote outranks any read that went
+ *     out before it, however late that read arrives.
  *
  * The script never builds a row out of a template string. It clones the row the
  * markup already rendered and fills it with `textContent`, so there is one
@@ -326,6 +329,11 @@ export const poll: WidgetSpec = {
       var busy = false;
       var closed = false;
       var gone = false;
+      /* Bumped the moment the reader acts. A tally read that went out before
+         the bump describes a poll their vote is not in, so its answer is
+         dropped rather than rendered — the tally is live, and a slow read is
+         not allowed to take a vote back off the screen. */
+      var epoch = 0;
 
       /* The endpoint is a token on the root element, so a stylesheet can move
          this embed to another host without touching the script. */
@@ -416,15 +424,23 @@ export const poll: WidgetSpec = {
 
       function load() {
         if (!live || gone) return Promise.resolve();
+        var mine = epoch;
         return send('/' + encodeURIComponent(pollId), {
           credentials: 'same-origin',
           headers: { 'Accept': 'application/json' }
         }).then(function (res) {
+          if (stale(mine)) return;
           if (res.ok) settled(res.body);
           else settled(null, res.body && res.body.message ? res.body.message : copy.loadFailed, 'alert');
         }).catch(function () {
-          if (!gone) say(copy.loadFailed, 'alert');
+          if (!stale(mine)) say(copy.loadFailed, 'alert');
         });
+      }
+
+      /* True when this answer is about a poll the reader has since moved on
+         from, or about a card that is no longer on the page. */
+      function stale(mine) {
+        return gone || mine !== epoch;
       }
 
       /* Preview mode keeps the tally in the page: the tile in the gallery is a
@@ -484,6 +500,7 @@ export const poll: WidgetSpec = {
         if (busy || closed) return;
         if (!live) { previewVote(optionId); return; }
         busy = true;
+        epoch += 1;
         send('/' + encodeURIComponent(pollId) + '/vote', {
           method: 'POST',
           credentials: 'same-origin',
