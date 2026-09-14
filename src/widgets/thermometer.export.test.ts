@@ -51,6 +51,23 @@ interface Reading {
   gaugeClass: string
   /** The overflow pill, or `null` when the reading has not passed the target. */
   over: string | null
+  /** The `data-*` hooks, as the value each one carries once rendered. */
+  hooks: string[]
+}
+
+/** The scripting hooks the markup hangs on the parts a reader ends up looking at. */
+const HOOKS = ['data-mercury', 'data-value', 'data-target', 'data-over'] as const
+
+/**
+ * Which language each surface is written in. It decides one thing only, but a decisive
+ * one: what an attribute written without a value ends up meaning (see `readHooks`).
+ */
+const LANGUAGE: Record<Format, 'html' | 'jsx'> = {
+  html: 'html',
+  react: 'jsx',
+  vue: 'html',
+  svelte: 'html',
+  webcomponent: 'html',
 }
 
 /* ------------------------------------------------------------- surfaces ---- */
@@ -101,10 +118,10 @@ const SURFACE: Record<Format, (files: ExportFile[]) => string> = {
  * nothing more — a different number, a missing pill or a dropped `is-reached` still
  * reads differently.
  */
-function readSurface(surface: string): Reading {
+function readSurface(surface: string, language: 'html' | 'jsx'): Reading {
   const flat = surface.replace(/\s*\n\s*/g, ' ')
   const text = (marker: string): string | null => {
-    const m = flat.match(new RegExp(`${marker}>\\s*([^<]*?)\\s*<`))
+    const m = flat.match(new RegExp(`${marker}(?:="")?\\s*>\\s*([^<]*?)\\s*<`))
     return m ? m[1] : null
   }
   const gauge = flat.match(/class(?:Name)?="(wg-thermometer__gauge[^"]*)"/)
@@ -119,7 +136,24 @@ function readSurface(surface: string): Reading {
     marks: [...flat.matchAll(/--y['"]?\s*:\s*['"]?\s*([\d.]+%)/g)].map((m) => m[1]),
     gaugeClass: gauge ? gauge[1] : '',
     over: text('data-over'),
+    hooks: readHooks(flat, language),
   }
+}
+
+/**
+ * A hook written without a value does not mean the same thing in every host language:
+ * HTML gives it the empty string — and the Vue template, the Svelte element and the web
+ * component's markup string are HTML — while JSX gives it boolean `true`, which React
+ * renders into the DOM as `data-value="true"`. So each surface is read through its own
+ * rule, and what the formats are held to is the attribute a browser ends up with rather
+ * than the source spelling that produced it.
+ */
+function readHooks(flat: string, language: 'html' | 'jsx'): string[] {
+  const bare = language === 'jsx' ? 'true' : ''
+  return HOOKS.flatMap((name) => {
+    const m = flat.match(new RegExp(`\\b${name}(?:="([^"]*)")?`))
+    return m ? [`${name}="${m[1] ?? bare}"`] : []
+  })
 }
 
 /* ------------------------------------------------------------- expected ---- */
@@ -150,6 +184,9 @@ function expectedReading(inputs: Inputs): Reading {
     marks: Array.from({ length: inputs.steps - 1 }, (_, i) => `${Math.round(((i + 1) / inputs.steps) * 1000) / 10}%`),
     gaugeClass: current >= target ? 'wg-thermometer__gauge is-reached' : 'wg-thermometer__gauge',
     over: over > 0 ? `+${round1(over)}${inputs.unit} over` : null,
+    // The markup writes every hook bare, which in HTML is the empty string. No format
+    // gets to invent a value for it, and the pill's hook appears only with the pill.
+    hooks: HOOKS.filter((name) => name !== 'data-over' || over > 0).map((name) => `${name}=""`),
   }
 }
 
@@ -204,7 +241,7 @@ describe('M-4: thermometer exports in all five formats', () => {
 
         const readings = FORMATS.map((format) => {
           const target = targets.find((t) => t.id === format)!
-          return [format, readSurface(SURFACE[format](target.files))] as const
+          return [format, readSurface(SURFACE[format](target.files), LANGUAGE[format])] as const
         })
 
         // Each format against the independently derived reading: a format that drifts

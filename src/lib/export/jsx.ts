@@ -118,10 +118,27 @@ function jsxText(s: string): string {
   return s.replace(/[{}]/g, (c) => `{'${c}'}`)
 }
 
+/**
+ * HTML gives a valueless attribute the empty string; JSX gives it boolean `true`, which
+ * React then renders as `data-x="true"`. Only the attributes the DOM defines as boolean
+ * mean `true` when written bare, so those keep the shorthand and every other one — the
+ * `data-*` hooks this project writes, above all — is spelled out as `=""` to land in the
+ * DOM exactly as the HTML, Vue, Svelte and web component exports land it.
+ */
+const BOOLEAN = new Set([
+  'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default',
+  'defer', 'disabled', 'formnovalidate', 'hidden', 'inert', 'ismap', 'itemscope', 'loop',
+  'multiple', 'muted', 'nomodule', 'novalidate', 'open', 'playsinline', 'readonly',
+  'required', 'reversed', 'selected',
+])
+
 function emit(node: Node, pad: string, cast?: string): string {
   if (node.kind === 'text') return pad + jsxText(node.value)
   const attrs = node.attrs.map((a) => {
-    if (a.value === null) return jsxAttrName(a.name)
+    if (a.value === null) {
+      const name = jsxAttrName(a.name)
+      return BOOLEAN.has(a.name.toLowerCase()) ? name : `${name}=""`
+    }
     if (a.name.toLowerCase() === 'style') return `style={${styleObject(a.value, cast)}}`
     return `${jsxAttrName(a.name)}=${JSON.stringify(a.value)}`
   })

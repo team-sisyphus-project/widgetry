@@ -262,7 +262,8 @@ describe('countdown export targets (M-5)', () => {
 
   /** The `D-n` / `D-DAY` tag text, from any format. */
   function extractDday(content: string): string {
-    const m = content.match(/data-dday>\s*(D-[A-Z0-9]+)/)
+    // `data-dday` is written bare; React spells the same empty value out as `=""`.
+    const m = content.match(/data-dday(?:="")?>\s*(D-[A-Z0-9]+)/)
     if (!m) throw new Error('no D-day value')
     return m[1]
   }
