@@ -51,14 +51,32 @@ their unmount path.
 The control list drives the studio panel, the defaults and the config file.
 
 ```ts
-{ key: 'ink',   label: 'Ink',   type: 'color',   default: '#ffffff', group: 'Color' }
-{ key: 'size',  label: 'Size',  type: 'number',  default: 180, min: 120, max: 240, step: 4, unit: 'px' }
-{ key: 'live',  label: 'Live',  type: 'boolean', default: true }
-{ key: 'icon',  label: 'Icon',  type: 'select',  default: 'bed', options: [{ value: 'bed', label: 'Bed' }] }
-{ key: 'label', label: 'Label', type: 'text',    default: 'Sleep Mode', maxLength: 24 }
+{ key: 'ink',    label: 'Ink',    type: 'color',    default: '#ffffff', group: 'Color' }
+{ key: 'size',   label: 'Size',   type: 'number',   default: 180, min: 120, max: 240, step: 4, unit: 'px' }
+{ key: 'live',   label: 'Live',   type: 'boolean',  default: true }
+{ key: 'icon',   label: 'Icon',   type: 'select',   default: 'bed', options: [{ value: 'bed', label: 'Bed' }] }
+{ key: 'label',  label: 'Label',  type: 'text',     default: 'Sleep Mode', maxLength: 24 }
+{ key: 'cities', label: 'Cities', type: 'citylist', default: 'London|Europe/London', max: 6 }
 ```
 
 `group` sorts fields into sections. Fields with no group land in `Content`.
+
+### The city list
+
+`citylist` is the one control that edits more than one value. It draws a row per
+city — a zone field offering the browser's own zone catalogue, the label the
+board shows when the value carries one, and a button that drops the row — and
+writes the rows back as the single `Label|Zone, ...` string the widget parses.
+`max` is the widget's cap rather than the studio's, so the world clock asks for
+six because six faces are what its board holds, and the add button says as much
+once the rows reach it.
+
+The value stays one string on purpose: `?p=` links and the Config export carry
+control values verbatim, so a richer type here would break every link already
+shared. A zone this browser cannot resolve is marked in its row and explained in
+a line under the list, because the board leaves that city out and a face that
+quietly disappears is the failure nobody notices. On an engine that offers no
+catalogue at all, the rows still accept a typed zone id.
 
 ## 4. Keep markup deterministic
 

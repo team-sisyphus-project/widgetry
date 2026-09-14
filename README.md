@@ -2,10 +2,10 @@
 
 **Live UI utilities you can take with you.**
 
-A gallery of small, running UI utilities (clock, forecast card, charge meter, liquid
-gauge, switch, scrubber and more). Open one, turn its knobs, then walk away with
-working code in the format your project actually uses. MIT, no runtime, no
-attribution.
+A gallery of small, running UI utilities (clock, world clock, forecast card,
+charge meter, liquid gauge, switch, scrubber and more). Open one, turn its knobs,
+then walk away with working code in the format your project actually uses. MIT,
+no runtime, no attribution.
 
 Widgetry is not a component library you install. It is a place you take things
 from. The value it delivers is the same value an open source drop delivers:
@@ -30,7 +30,7 @@ download cannot look or behave differently from the tile you clicked.
 | Route | Screen |
 | --- | --- |
 | `/` | Landing. A 3D tilting card whose face is a live collage of the real widgets, and a button into the gallery |
-| `#/gallery` | The gallery of all 15 running utilities |
+| `#/gallery` | The gallery of all 19 running utilities |
 | `#/w/<id>` | The studio for one widget, with `?p=` carrying a tuned build |
 
 The landing card is not a picture of the product. It mounts the same widget specs
@@ -115,6 +115,11 @@ in front of it untouched.
 There is nothing else to stand up. No database, no cache, no migrations, no seed
 data, no accounts, no login — every widget runs in the browser, and the server
 only hands out files. A green field is the only state this app has.
+
+The World Clock looks like the exception and is not one. Its zone list, and every
+local time and GMT offset it draws, come from the browser's own `Intl` time zone
+database, so there is no data file to ship, no key to hold, and nothing to update
+when a region changes its daylight saving rules.
 
 Configuration is environment only: `PORT`, `HOST` (default `0.0.0.0`), and
 `STATIC_ROOT` if you want to serve a directory other than `dist/`. There are no

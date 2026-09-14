@@ -76,11 +76,18 @@ support are included in the widget source. They ship as-is in the exported code.
 - Landing screen: 3D tilt card whose faces are a live collage mounting the actual
   widget specs. CTA leads into the gallery. Routes are `/` landing, `#/gallery`
   gallery, `#/w/<id>` studio
-- 15 widgets: clock, brightness slider, weather card, player, labeled switch,
-  charge meter, voice scrubber, compass, mode pill, todo list, liquid gauge,
-  card stack, agenda, signal orb, record key
+- 19 widgets: clock, brightness slider, weather card, player, labeled switch,
+  charge meter, voice scrubber, compass, mode pill, todo list, habit streak,
+  liquid gauge, card stack, contact card, agenda, event countdown, world clock,
+  signal orb, record key
+- World clock: up to six cities on one board, each face analog or digital, with
+  the hours a city is working lit from the rest of its day. Zones, offsets and
+  daylight saving come from the browser's `Intl` database, so the widget ships no
+  data of its own
 - 5 categories (Time / System / Media / Data / Life) with filters and search
-- Studio: live stage (3 backgrounds), replay, control panel, reset
+- Studio: live stage (3 backgrounds), replay, control panel, reset. The panel
+  renders one field per control type, including the city picker, which edits the
+  world clock's cities as a capped list of rows
 - 7 export targets: HTML, React, Vue, Svelte, Web Component, HTML+CSS, Config
 - Per-file copy, per-file download, per-target ZIP, all-formats ZIP
 - Shareable build link (settings encoded in the URL), clipboard Config restore
@@ -98,7 +105,7 @@ support are included in the widget source. They ship as-is in the exported code.
 
 | Criterion | Method | Result |
 | --- | --- | --- |
-| Does the exported HTML actually run | Dumped all 15 to files and ran them simultaneously in a browser | Pass |
+| Does the exported HTML actually run | Dumped every widget to files and ran them simultaneously in a browser | Pass |
 | Does the exported React compile in a user project | Separate strict-mode `tsc --noEmit` run | Pass |
 | Is the ZIP a valid archive | Generated with the in-browser implementation, then `unzip -t` | Pass |
 | Does the share link restore settings | Re-entered via the link and compared tokens and copy | Pass |
