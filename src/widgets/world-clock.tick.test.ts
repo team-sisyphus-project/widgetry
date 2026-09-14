@@ -326,3 +326,228 @@ describe('world-clock disposer', () => {
     expect(() => dispose1()).not.toThrow()
   })
 })
+
+/* ------------------------------------------------------------------ *
+ * Rollovers, per-city divergence, and what the disposer leaves behind
+ * ------------------------------------------------------------------ */
+
+/** The weekday/offset line under a city. */
+function lineOf(root: HTMLElement, zone: string): string {
+  return textOf(root, zone, '[data-zone-line]')
+}
+
+/**
+ * Cities whose displayed time is not the one the platform reports for their own
+ * zone at `at`. Empty means the whole board is right. Returned rather than
+ * asserted so the closing describe can show the reader reporting a wrong board.
+ */
+function wrongCities(root: HTMLElement, at: Date): string[] {
+  const out: string[] = []
+  for (const el of root.querySelectorAll<HTMLElement>('[data-zone]')) {
+    const zone = el.getAttribute('data-zone')!
+    const shown = el.querySelector('[data-time]')?.textContent ?? ''
+    const want = reference(zone, at)
+    if (shown !== want) out.push(`${zone}: ${shown} != ${want}`)
+  }
+  return out
+}
+
+/** Move the mocked clock to `iso` and let exactly one second of ticking happen. */
+function tickTo(iso: string): Date {
+  const at = new Date(iso)
+  vi.setSystemTime(new Date(at.getTime() - 1000))
+  vi.advanceTimersByTime(1000)
+  return at
+}
+
+describe('world-clock rolls each city over on its own calendar (M1)', () => {
+  it('crosses midnight in one city while another stays on the previous day', () => {
+    stubMatchMedia(false)
+    vi.setSystemTime(new Date('2026-06-01T14:58:00Z'))
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      face: 'digital',
+      cities: 'Seoul|Asia/Seoul, London|Europe/London',
+    })
+    expect(textOf(host, 'Asia/Seoul', '[data-time]')).toBe('23:58')
+    expect(lineOf(host, 'Asia/Seoul').startsWith('Mon')).toBe(true)
+
+    const at = tickTo('2026-06-01T15:00:00Z')
+    expect(wrongCities(host, at)).toEqual([])
+    // One instant, two dates: Seoul has turned over into Tuesday, London has not.
+    expect(textOf(host, 'Asia/Seoul', '[data-time]')).toBe('00:00')
+    expect(lineOf(host, 'Asia/Seoul')).toBe('Tue · GMT+9')
+    expect(textOf(host, 'Europe/London', '[data-time]')).toBe('16:00')
+    expect(lineOf(host, 'Europe/London')).toBe('Mon · GMT+1')
+  })
+
+  it('follows a city through its own DST change without touching the others', () => {
+    stubMatchMedia(false)
+    // 2026-10-25T01:00Z: central Europe puts its clocks back, Seoul does not.
+    vi.setSystemTime(new Date('2026-10-25T00:58:00Z'))
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      face: 'digital',
+      cities: 'Berlin|Europe/Berlin, Seoul|Asia/Seoul',
+    })
+    expect(textOf(host, 'Europe/Berlin', '[data-time]')).toBe('02:58')
+    expect(lineOf(host, 'Europe/Berlin')).toBe('Sun · GMT+2')
+
+    const at = tickTo('2026-10-25T01:00:00Z')
+    expect(wrongCities(host, at)).toEqual([])
+    // The hour repeats: 03:00 CEST becomes 02:00 CET, and the label says so.
+    expect(textOf(host, 'Europe/Berlin', '[data-time]')).toBe('02:00')
+    expect(lineOf(host, 'Europe/Berlin')).toBe('Sun · GMT+1')
+    expect(lineOf(host, 'Asia/Seoul')).toBe('Sun · GMT+9')
+  })
+
+  it('keeps six zones right over an hour of minute rollovers', () => {
+    stubMatchMedia(false)
+    dispose = mount(host, spec, { ...defaultProps(spec), cities: SIX, face: 'digital' })
+    for (const minutes of [1, 7, 30, 59, 60]) {
+      const at = tickTo(new Date(NOW.getTime() + minutes * 60_000).toISOString())
+      expect({ minutes, wrong: wrongCities(host, at) }).toEqual({ minutes, wrong: [] })
+    }
+  })
+})
+
+describe('world-clock flips the working-hours class per city, at the boundary (M3)', () => {
+  function mountPair(iso: string) {
+    stubMatchMedia(false)
+    vi.setSystemTime(new Date(iso))
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      face: 'digital',
+      cities: 'Berlin|Europe/Berlin, Seoul|Asia/Seoul',
+      workStart: 9,
+      workEnd: 18,
+    })
+  }
+
+  it('drops one city out at 18:00 local while the other stays lit', () => {
+    // 08:59Z is 17:59 in Seoul and 10:59 in Berlin: both inside the range.
+    mountPair('2026-06-01T08:58:00Z')
+    expect(cell(host, 'Asia/Seoul').className).toContain('is-work')
+    expect(cell(host, 'Europe/Berlin').className).toContain('is-work')
+
+    tickTo('2026-06-01T09:00:00Z')
+    expect(cell(host, 'Asia/Seoul').className).not.toContain('is-work')
+    expect(cell(host, 'Europe/Berlin').className).toContain('is-work')
+  })
+
+  it('lights a city on the first minute of its working day, not the one before', () => {
+    mountPair('2026-06-01T06:58:00Z') // Berlin 08:58
+    expect(cell(host, 'Europe/Berlin').className).not.toContain('is-work')
+
+    tickTo('2026-06-01T06:59:00Z') // Berlin 08:59
+    expect(cell(host, 'Europe/Berlin').className).not.toContain('is-work')
+
+    tickTo('2026-06-01T07:00:00Z') // Berlin 09:00
+    expect(cell(host, 'Europe/Berlin').className).toContain('is-work')
+  })
+})
+
+describe('world-clock disposer leaves nothing running', () => {
+  it('clears the interval it opened, counted', () => {
+    stubMatchMedia(true) // reduce: the engine runs on setInterval
+    const before = vi.getTimerCount()
+    const stop = mount(host, spec, { ...defaultProps(spec), cities: SIX, face: 'digital' })
+    expect(vi.getTimerCount()).toBeGreaterThan(before)
+
+    stop()
+    expect(vi.getTimerCount()).toBe(before)
+  })
+
+  it('cancels the frame loop it opened', () => {
+    stubMatchMedia(false)
+    const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    const stop = mount(host, spec, { ...defaultProps(spec), cities: 'UTC|UTC', smooth: true })
+    cancel.mockClear()
+
+    stop()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('leaks nothing when the engine switches loops mid-session', () => {
+    const media = stubMatchMedia(false)
+    const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    const base = vi.getTimerCount()
+    const stop = mount(host, spec, { ...defaultProps(spec), cities: 'UTC|UTC', smooth: true })
+
+    expect(vi.getTimerCount()).toBe(base + 1) // the frame loop, and only it
+
+    media.set(true) // frame loop out, interval in
+    expect(cancel).toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(base + 1) // replaced, not joined
+
+    media.set(false) // and back, still one engine running
+    expect(vi.getTimerCount()).toBe(base + 1)
+
+    stop()
+    // Whatever the switching left open, the disposer closed.
+    expect(vi.getTimerCount()).toBe(0)
+    expect(media.listeners.size).toBe(0)
+  })
+
+  it('writes nothing more into a board it has released', () => {
+    stubMatchMedia(true)
+    const stop = mount(host, spec, { ...defaultProps(spec), cities: SIX, face: 'digital' })
+    stop()
+
+    host.innerHTML = spec.markup({ ...defaultProps(spec), cities: SIX, face: 'digital' })
+    const frozen = new Date(NOW.getTime())
+    vi.setSystemTime(new Date(NOW.getTime() + 3 * 3600_000))
+    vi.advanceTimersByTime(10_000)
+    // Three hours on, the released board still reads the instant it was rendered.
+    expect(wrongCities(host, frozen)).toEqual([])
+  })
+})
+
+describe('the tick checks are able to fail', () => {
+  it('wrongCities reports a board that stopped ticking', () => {
+    stubMatchMedia(true)
+    const stop = mount(host, spec, { ...defaultProps(spec), cities: SIX, face: 'digital' })
+    stop()
+    host.innerHTML = spec.markup({ ...defaultProps(spec), cities: SIX, face: 'digital' })
+
+    const at = new Date(NOW.getTime() + 45 * 60_000)
+    vi.setSystemTime(at)
+    vi.advanceTimersByTime(5000)
+    // The same reader that returns [] for every passing test above returns one
+    // entry per city here, which is what makes those empty arrays evidence.
+    expect(wrongCities(host, at)).toHaveLength(6)
+  })
+
+  it('wrongCities reports six faces driven by a single zone', () => {
+    stubMatchMedia(false)
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      face: 'digital',
+      // Six labels, one zone: the failure mode a count-only check would miss.
+      cities:
+        'San Francisco|UTC, New York|UTC, London|UTC, Berlin|UTC, Mumbai|UTC, Seoul|UTC',
+    })
+    const shown = [...host.querySelectorAll('[data-time]')].map((el) => el.textContent)
+    expect(new Set(shown).size).toBe(1)
+    expect(new Set(shown).size).not.toBe(6)
+  })
+
+  it('the boundary check reports a highlight that never turns off', () => {
+    stubMatchMedia(false)
+    vi.setSystemTime(new Date('2026-06-01T12:00:00Z'))
+    // A range covering the whole day is lit at every instant: a cell that stayed
+    // lit through 18:00 would look exactly like this, and the boundary tests
+    // above are what tell the two apart.
+    dispose = mount(host, spec, {
+      ...defaultProps(spec),
+      face: 'digital',
+      cities: 'UTC|UTC',
+      workStart: 0,
+      workEnd: 24,
+    })
+    expect(cell(host, 'UTC').className).toContain('is-work')
+    tickTo('2026-06-01T18:00:00Z')
+    expect(cell(host, 'UTC').className).toContain('is-work')
+  })
+})
