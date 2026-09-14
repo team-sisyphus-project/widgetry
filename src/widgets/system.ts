@@ -486,12 +486,29 @@ export const signal: WidgetSpec = {
 }
 
 /**
+ * A control value read back as a finite number.
+ *
+ * `Number(...)` answers NaN for an empty or non-numeric prop and Infinity for an
+ * overlarge one. Either would travel straight into `--wg-fill` as `NaN%` / `Infinity%`,
+ * and a custom property the browser cannot parse is simply dropped — the mercury would
+ * keep whatever height it last had while the readout printed `NaN`, so the gauge would
+ * go on showing a number nobody sent. Unreadable input is answered here instead, and it
+ * is answered at the empty end of the scale: a gauge that admits it knows nothing beats
+ * one that claims progress nobody made.
+ */
+function finite(v: unknown, fallback: number): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
+/**
  * Fill ratio for the thermometer gauge, clamped to [0, 1].
  * Same shape as the checklist / habit-streak progress rail: a single metric over its
  * goal, locked at 1 the moment the goal is reached so overshoot never overdraws the tube.
+ * Both ends are finite, so the percentage handed to the stylesheet always parses.
  */
 function gaugeRatio(current: number, target: number): number {
-  return Math.min(1, Math.max(0, current) / Math.max(1, target))
+  return Math.min(1, Math.max(0, finite(current, 0)) / Math.max(1, finite(target, 1)))
 }
 
 /** One decimal at most, so a shared URL carrying 72.4 still reads cleanly. */
@@ -526,8 +543,10 @@ export const thermometer: WidgetSpec = {
     '--wg-fill': `${gaugeRatio(Number(p.currentValue), Number(p.targetValue)) * 100}%`,
   }),
   markup: (p) => {
-    const current = Math.max(0, Number(p.currentValue))
-    const target = Math.max(1, Number(p.targetValue))
+    /* Read through the same floor/ceiling the ratio uses, so the number the gauge is
+       drawn from and the number the readout prints can never disagree. */
+    const current = Math.max(0, finite(p.currentValue, 0))
+    const target = Math.max(1, finite(p.targetValue, 1))
     const steps = Math.min(8, Math.max(2, Math.round(Number(p.steps))))
     const unit = String(p.unit).trim()
     const u = unit ? esc(unit) : ''
@@ -575,6 +594,9 @@ export const thermometer: WidgetSpec = {
       color: var(--wg-ink);
       font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       box-sizing: border-box;
+      /* The card is the boundary, not a suggestion: 999 of 1 with a six-character unit
+         is a longer readout than this box can hold, and it stays inside anyway. */
+      overflow: hidden;
     }
     .wg-thermometer__gauge {
       display: flex;
@@ -624,6 +646,20 @@ export const thermometer: WidgetSpec = {
       justify-content: center;
       gap: 6px;
       min-width: 0;
+      overflow: hidden;
+      /* Digits keep their column as the value ticks, so the readout never reflows
+         under its own numbers. */
+      font-variant-numeric: tabular-nums;
+    }
+    /* Every line of the readout is one line, capped at the column, and says so with an
+       ellipsis when it runs out of room. A long value or a "+998 over" pill therefore
+       shortens instead of pushing the card wider or taller. */
+    .wg-thermometer__read > * {
+      box-sizing: border-box;
+      max-width: 100%;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
     }
     .wg-thermometer__value { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
     .wg-thermometer__unit { font-size: 15px; font-weight: 500; margin-left: 2px; opacity: .7; }
