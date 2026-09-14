@@ -645,7 +645,8 @@ const THROWING_METHODS: PropertyDescriptor = {
  * than a note that merely does not outlive the tab.
  *
  * Each test below mounts, acts, disposes and mounts again, which is exactly what the
- * studio does on every control change and what a browser does on every reload.
+ * studio does on every control change. A browser reload is *not* that - it never
+ * calls the disposer - and it has its own block further down.
  */
 describe('scratchpad: the note is still there next time', () => {
   it('gives back what the visitor typed, not what the author seeded', () => {
@@ -906,6 +907,226 @@ describe('scratchpad: a browser that refuses storage', () => {
 })
 
 /**
+ * Write, reload, note persists.
+ *
+ * A reload is the one exit that runs no cleanup. The studio remounts through
+ * `Live.tsx` on a control change and React calls the effect cleanup, so the disposer
+ * flushes; a browser asked to reload throws the whole page away without calling it.
+ * Between the last keystroke and the debounce firing there are up to 400ms in which
+ * the note exists only in the textarea - and reaching for the reload key right after
+ * typing a word is not an exotic sequence, it is the ordinary one.
+ *
+ * So the widget listens for the two signals a browser is required to deliver before
+ * it may discard a page: `pagehide` (reload, navigation, close) and a
+ * `visibilitychange` to hidden (a backgrounded tab a phone may never resume). These
+ * tests fire those events rather than the disposer, which is the difference between
+ * proving the studio keeps the note and proving a reload does.
+ */
+describe('scratchpad: the note survives the page going away', () => {
+  /** Fire what a browser fires on its way out, without tearing the widget down. */
+  const pagehide = (): void => {
+    window.dispatchEvent(new Event('pagehide'))
+  }
+
+  /** Background the tab: flip `visibilityState`, then fire the event that reports it. */
+  const background = (state: 'hidden' | 'visible'): void => {
+    const real = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState')
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    try {
+      document.dispatchEvent(new Event('visibilitychange'))
+    } finally {
+      if (real) Object.defineProperty(Document.prototype, 'visibilityState', real)
+      delete (document as unknown as Record<string, unknown>).visibilityState
+    }
+  }
+
+  it('commits a half-typed note when the page is reloaded, and gives it back', () => {
+    vi.useFakeTimers()
+    let live: ReturnType<typeof mountLive>
+    try {
+      live = mountLive({ storageKey: 'standup', text: 'seeded note' })
+      type(live.editor, 'typed a word then hit reload')
+
+      // Mid-debounce: on screen, not yet stored. This is the window a reload lands in.
+      expect(localStorage.getItem(keyFor('standup'))).toBeNull()
+      pagehide()
+      expect(localStorage.getItem(keyFor('standup'))).toContain('typed a word then hit reload')
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // The reload itself: the old page is gone, a fresh mount reads what it left.
+    live!.dispose()
+    const reloaded = mountLive({ storageKey: 'standup', text: 'seeded note' })
+    expect(reloaded.editor.value).toBe('typed a word then hit reload')
+    expect(reloaded.preview.innerHTML).toBe(previewFor('typed a word then hit reload'))
+    reloaded.dispose()
+  })
+
+  it('commits when the tab is backgrounded, where pagehide may never come', () => {
+    vi.useFakeTimers()
+    let live: ReturnType<typeof mountLive>
+    try {
+      live = mountLive({ storageKey: 'standup' })
+      type(live.editor, 'switched apps mid-sentence')
+      expect(localStorage.getItem(keyFor('standup'))).toBeNull()
+      background('hidden')
+      expect(localStorage.getItem(keyFor('standup'))).toContain('switched apps mid-sentence')
+    } finally {
+      vi.useRealTimers()
+    }
+
+    live!.dispose()
+    const back = mountLive({ storageKey: 'standup' })
+    expect(back.editor.value).toBe('switched apps mid-sentence')
+    back.dispose()
+  })
+
+  /** Coming back is not leaving. Only the hidden transition is a last chance. */
+  it('does not treat becoming visible as a reason to write', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      const live = mountLive({ storageKey: 'standup' })
+      type(live.editor, 'still here')
+      background('visible')
+      expect(setItem).not.toHaveBeenCalled()
+      live.dispose()
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
+  /**
+   * Rule 1 has to hold on the way out too. The gallery mounts every widget to draw
+   * its tiles, and closing that tab must not deposit a note nobody wrote - a flush
+   * that wrote unconditionally would turn every visit into a record.
+   */
+  it('writes nothing on the way out when nothing was typed', () => {
+    const live = mountLive({ storageKey: 'standup', text: 'seeded note' })
+    pagehide()
+    background('hidden')
+    expect(storedKeys()).toEqual([])
+    live.dispose()
+    expect(storedKeys()).toEqual([])
+  })
+
+  /** A flush is not a teardown either: the widget keeps working after one. */
+  it('keeps saving after a flush, so a restored page is not a dead one', () => {
+    vi.useFakeTimers()
+    try {
+      const live = mountLive({ storageKey: 'standup' })
+      type(live.editor, 'first thought')
+      pagehide()
+      expect(localStorage.getItem(keyFor('standup'))).toContain('first thought')
+
+      type(live.editor, 'first thought, then a second')
+      pagehide()
+      expect(localStorage.getItem(keyFor('standup'))).toContain('first thought, then a second')
+      expect(storedKeys()).toEqual([keyFor('standup')])
+      live.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /**
+   * Rule 3 of the authoring contract covers these two listeners as much as the ones
+   * on the widget's own nodes, and they are the ones that can actually be left
+   * behind: `window` and `document` outlive the widget, so a missed removal is a
+   * listener - and, through its closure, a whole detached card - that the page keeps
+   * for as long as it lives. The studio remounts on every control change, so that is
+   * one leak per keystroke in a colour field.
+   *
+   * The assertion is registration against removal, by function reference: nothing
+   * else distinguishes a removal that works from one that silently matches nothing.
+   */
+  it('takes its page listeners off window and document when disposed', () => {
+    const added: [EventTarget, string, unknown][] = []
+    const removed: [EventTarget, string, unknown][] = []
+    const spies = [window, document].flatMap((target) => [
+      vi.spyOn(target, 'addEventListener').mockImplementation((...args: unknown[]) => {
+        added.push([target, args[0] as string, args[1]])
+      }),
+      vi.spyOn(target, 'removeEventListener').mockImplementation((...args: unknown[]) => {
+        removed.push([target, args[0] as string, args[1]])
+      }),
+    ])
+
+    try {
+      const live = mountLive({ storageKey: 'standup' })
+      expect(added.map(([, t]) => t).sort()).toEqual(['pagehide', 'visibilitychange'])
+      expect(added.find(([, t]) => t === 'pagehide')![0]).toBe(window)
+      expect(added.find(([, t]) => t === 'visibilitychange')![0]).toBe(document)
+      expect(removed).toEqual([])
+
+      live.dispose()
+      expect(removed, 'a page listener outlived the widget').toEqual(added)
+    } finally {
+      for (const spy of spies) spy.mockRestore()
+    }
+  })
+
+  it('leaves the page quietly when storage refuses', () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      withStorage(DENIED, () => {
+        const live = mountLive({ storageKey: 'standup' })
+        type(live.editor, 'typed into a locked browser')
+        expect(() => {
+          pagehide()
+          background('hidden')
+        }).not.toThrow()
+        live.dispose()
+      })
+      expect(logged).not.toHaveBeenCalled()
+    } finally {
+      logged.mockRestore()
+    }
+  })
+
+  /**
+   * The downloaded file is the deliverable, and it has no unmount path at all - the
+   * disposer it returns is never called by anything. The page-hide flush is the only
+   * thing standing between a visitor's last sentence and a reload, so it has to be in
+   * the file, not just in the studio.
+   */
+  it('carries the same protection into its own exported html file', () => {
+    const props = normalizeProps(scratchpad, { storageKey: 'standup', text: 'seeded note' })
+    const html = buildTargets(scratchpad, props).find((t) => t.id === 'html')!.files[0].content
+
+    vi.useFakeTimers()
+    try {
+      const stage = stageExportedHtml(html)
+      type(stage.querySelector<HTMLTextAreaElement>('[data-editor]')!, 'typed into the downloaded file')
+      expect(storedKeys()).toEqual([])
+      pagehide()
+      expect(storedKeys()).toEqual([keyFor('standup')])
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const reloaded = stageExportedHtml(html)
+    expect(reloaded.querySelector<HTMLTextAreaElement>('[data-editor]')!.value).toBe(
+      'typed into the downloaded file',
+    )
+    reloaded.remove()
+  })
+
+  /** Every target that runs a script runs this one, so every target gets the flush. */
+  it.each(FORMATS)('registers the page-hide flush in the %s export', (id) => {
+    const content = contentOf(
+      buildTargets(scratchpad, defaultProps(scratchpad)).find((t) => t.id === id)!.files,
+    )
+    expect(content, `${id} would lose a note to a reload`).toContain(
+      "addEventListener('pagehide', flush)",
+    )
+    expect(content).toContain("addEventListener('visibilitychange', hide)")
+    expect(content).toContain("removeEventListener('pagehide', flush)")
+    expect(content).toContain("removeEventListener('visibilitychange', hide)")
+  })
+})
+
+/**
  * Whoever downloads the file has to be able to find what it wrote in their browser,
  * and to know it wrote anything at all. Both facts have to survive into the export,
  * because that file is the only documentation a downloader gets.
@@ -973,8 +1194,8 @@ describe('scratchpad: the key is documented where it is used', () => {
       const stage = stageExportedHtml(html)
       type(stage.querySelector<HTMLTextAreaElement>('[data-editor]')!, 'typed into the downloaded file')
 
-      // The downloaded file has no unmount path to flush on, so the timer is the
-      // whole mechanism: nothing until it fires, then exactly one record.
+      // Left alone, the timer is what writes: nothing until it fires, then exactly
+      // one record. (The page-hide flush is the other path, exercised below.)
       expect(storedKeys()).toEqual([])
       vi.advanceTimersByTime(1000)
       expect(storedKeys()).toEqual([keyFor('standup')])

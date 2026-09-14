@@ -482,7 +482,7 @@ function jsString(s: string): string {
  * control switches saving off entirely - the note then lives as long as the page
  * does - so an embed that must not leave a trace has a way to say so.
  *
- * Three rules bound it, and each one is a test:
+ * Four rules bound it, and each one is a test:
  *
  * 1. **Nothing is written until the visitor types.** Mounting reads; only `input`
  *    and the Edit toggle write. A gallery that mounts nineteen widgets to draw the
@@ -494,7 +494,13 @@ function jsString(s: string): string {
  *    `mount()` swallows a throwing script and renders nothing (src/lib/render.ts),
  *    so an unguarded access would not show up as a broken save - it would show up
  *    as a blank card.
- * 3. **A saved note belongs to the configuration it was saved against.** The record
+ * 3. **Leaving is not losing.** Typing is debounced, so at any moment there may be
+ *    a few characters that are on screen and not yet stored. Every way out commits
+ *    them first: the Edit toggle, the disposer the studio calls on a control change,
+ *    and - because a browser runs neither of those when the page goes away - the
+ *    `pagehide` and `visibilitychange` signals a reload, a navigation or a
+ *    backgrounded tab arrives on.
+ * 4. **A saved note belongs to the configuration it was saved against.** The record
  *    carries the note prop and the opening mode it was written under, and is
  *    ignored when either has since changed. Without that, editing the Note control
  *    in the studio would appear to do nothing - the stored note would win every
@@ -739,8 +745,8 @@ export const scratchpad: WidgetSpec = {
         }
 
         /* Typing settles before it is written, so a sentence is one write. Anything
-           that ends the session early - the toggle, the disposer - commits at once
-           rather than letting the timer lose the last few words. */
+           that ends the session early - the toggle, the disposer, the page going away
+           - commits at once rather than letting the timer lose the last few words. */
         var pending = null;
         function queue() {
           if (pending !== null) clearTimeout(pending);
@@ -785,12 +791,41 @@ export const scratchpad: WidgetSpec = {
           toggle.setAttribute('aria-pressed', saved.e ? 'true' : 'false');
         }
         paint();
+        /* A reload is not a teardown, and the note has to survive both.
+
+           The disposer below runs when the studio swaps a control or a framework
+           unmounts the component - never when the page itself goes away. A browser
+           reload, a link out and a closed tab all skip it, so on those paths the
+           debounce timer is the only thing holding the last few characters, and it
+           dies with the page. Typing a word and reaching for the reload key is not
+           an edge case; it is the ordinary way a note is lost.
+
+           A pagehide is the signal for the reload or the navigation. A
+           visibilitychange to hidden is the one a phone gives before backgrounding a
+           tab it may never resume, where pagehide can arrive too late or not at all.
+           beforeunload is deliberately not used: it disqualifies the page from the
+           back/forward cache and catches nothing these two miss.
+
+           Both go through flush(), which writes only what typing already queued - so
+           a page that mounts a scratchpad nobody touched still leaves nothing behind
+           when it closes. */
+        function flush() {
+          if (pending !== null) commit();
+        }
+        function hide() {
+          if (document.visibilityState === 'hidden') flush();
+        }
+
         editor.addEventListener('input', type);
         toggle.addEventListener('click', flip);
+        window.addEventListener('pagehide', flush);
+        document.addEventListener('visibilitychange', hide);
         return function () {
-          if (pending !== null) commit();
+          flush();
           editor.removeEventListener('input', type);
           toggle.removeEventListener('click', flip);
+          window.removeEventListener('pagehide', flush);
+          document.removeEventListener('visibilitychange', hide);
         };
       `),
     ].join('\n')

@@ -83,6 +83,11 @@ slot** control names that last segment, so two scratchpads on one page are two
 notes rather than one, and you can find or clear a note by hand. Leave the slot
 blank and saving is off; the note then lasts as long as the page does.
 
+Writes are debounced, so a sentence is one write rather than forty — and the note
+is committed before the page can take it away. Reloading, navigating away or
+backgrounding the tab all flush whatever is still pending, because none of those
+run the teardown the studio does.
+
 Nothing is written until you type, nothing leaves the browser, and a browser that
 refuses storage still runs the widget — the note simply does not outlive the tab.
 Exports carry the configuration; the browser carries the content. A note is never
